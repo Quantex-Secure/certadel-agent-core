@@ -498,3 +498,6 @@ appsettings.*.Production.json
 crm.db
 crm.db-shm
 crm.db-wal
+
+# Pebble ACME test server (scripts/download-pebble.ps1)
+tests/.pebble/
