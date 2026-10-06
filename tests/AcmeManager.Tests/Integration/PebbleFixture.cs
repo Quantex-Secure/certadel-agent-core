@@ -209,16 +209,19 @@ public sealed class PebbleFixture : IAsyncLifetime
         p.Dispose();
     }
 
+    // The agent source builds from CertadelAgent.slnx; the full product repo from AcmeManager.slnx.
+    private static readonly string[] SolutionFiles = ["CertadelAgent.slnx", "AcmeManager.slnx"];
+
     private static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "AcmeManager.slnx")))
+        while (dir is not null && !SolutionFiles.Any(f => File.Exists(Path.Combine(dir.FullName, f))))
         {
             dir = dir.Parent;
         }
         if (dir is null)
         {
-            throw new InvalidOperationException("Could not locate repo root (AcmeManager.slnx).");
+            throw new InvalidOperationException($"Could not locate repo root ({string.Join(" or ", SolutionFiles)}).");
         }
         return dir.FullName;
     }
