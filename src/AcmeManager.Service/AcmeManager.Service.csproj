@@ -17,7 +17,7 @@
     <!-- 10.0.10 is the first patched release for CVE-2026-47300 / CVE-2026-47303
          (Negotiate elevation-of-privilege, GHSA-2p3q-h3hg-jcqq / GHSA-8prm-248r-h957).
          Versions <= 10.0.9 are vulnerable; do not downgrade. -->
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.10" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
