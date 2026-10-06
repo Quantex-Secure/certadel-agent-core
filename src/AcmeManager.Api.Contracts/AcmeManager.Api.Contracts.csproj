@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Versioned wire contract shared by the agent's /api/v1 surface and the
+       Unified Certificate Manager client. Deliberately net10.0 (NOT -windows)
+       so the agent keeps building on Linux, and free of any Core/EF reference
+       so the DTOs are decoupled from the storage schema. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+
+</Project>

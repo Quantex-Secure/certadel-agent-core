@@ -1,0 +1,66 @@
+name: CI
+
+# Build and test the agent on Windows and Linux. The Release build runs with NuGet
+# audit enabled and TreatWarningsAsErrors=true (Directory.Build.props), so a newly
+# disclosed vulnerable package fails CI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # The end-to-end issuance tests need Pebble; without it they skip.
+      - name: Download Pebble (ACME test server)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/download-pebble.ps1
+
+      - name: Restore
+        run: dotnet restore CertadelAgent.slnx
+
+      - name: Build
+        run: dotnet build CertadelAgent.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test CertadelAgent.slnx -c Release --no-build --logger "trx;LogFileName=results.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ runner.os }}
+          path: TestResults/*.trx
+          if-no-files-found: ignore

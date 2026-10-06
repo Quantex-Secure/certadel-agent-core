@@ -1,0 +1,153 @@
+@page "/settings/dns-providers/new"
+@rendermode InteractiveServer
+@inject DnsProvidersService DnsProvidersSvc
+@inject PluginCatalog Catalog
+@inject NavigationManager Nav
+@using System.ComponentModel.DataAnnotations
+@using AcmeManager.Core.Plugins
+@using AcmeManager.Core.Storage
+@using AcmeManager.Plugins.Contracts
+
+<PageTitle>New DNS provider — Certadel Agent</PageTitle>
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="/settings">Settings</a></li>
+        <li class="breadcrumb-item"><a href="/settings/dns-providers">DNS providers</a></li>
+        <li class="breadcrumb-item active">New</li>
+    </ol>
+</nav>
+
+<h2 class="mb-3">New DNS provider</h2>
+
+<div class="card">
+    <div class="card-body" style="max-width: 44rem">
+        <EditForm Model="Form" OnValidSubmit="SubmitAsync" FormName="newDnsProvider">
+            <DataAnnotationsValidator />
+            <ValidationSummary class="alert alert-danger" />
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-danger">@_error</div>
+            }
+
+            <div class="mb-3">
+                <label class="form-label">Name</label>
+                <InputText class="form-control" @bind-Value="Form.Name"
+                           placeholder="e.g. cloudflare-prod, azure-dns-corp" />
+                <div class="form-text">Used in the renewal wizard. Must be unique.</div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Plugin</label>
+                <select class="form-select" @onchange="OnPluginSelected">
+                    <option value="">— select —</option>
+                    @foreach (var p in _dnsPlugins)
+                    {
+                        <option value="@p.Id" selected="@(Form.PluginId == p.Id)">@p.Id</option>
+                    }
+                </select>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(Form.PluginId))
+            {
+                <hr />
+                <h6 class="text-uppercase text-muted mb-3" style="font-size: 0.75rem; letter-spacing: 0.5px">Options</h6>
+                <PluginOptionsForm OptionsType="@OptionsTypeFor(Form.PluginId)"
+                                   OptionsJson="@Form.OptionsJson"
+                                   OptionsJsonChanged="@(json => Form.OptionsJson = json)" />
+                <div class="form-text mb-3">
+                    Reference any credentials via secret name — the actual token value lives only in
+                    <a href="/settings/secrets">Secrets</a>.
+                </div>
+            }
+
+            <button type="submit" class="btn btn-primary" disabled="@_busy">
+                @(_busy ? "Saving…" : "Save provider")
+            </button>
+            <a href="/settings/dns-providers" class="btn btn-outline-secondary">Cancel</a>
+        </EditForm>
+    </div>
+</div>
+
+@code {
+    public FormModel Form { get; set; } = default!;
+
+    private List<PluginRegistration> _dnsPlugins = [];
+    private bool _busy;
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        Form ??= new FormModel();
+
+        // DNS-01 validators are identified by id prefix — naming convention is enforced by us.
+        _dnsPlugins = Catalog.All
+            .Where(p => p.Category == PluginCategory.Validation
+                        && p.Id.StartsWith("validation.dns-01.", StringComparison.Ordinal))
+            .OrderBy(p => p.Id)
+            .ToList();
+    }
+
+    private void OnPluginSelected(ChangeEventArgs e)
+    {
+        Form.PluginId = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(Form.PluginId))
+        {
+            Form.OptionsJson = "{}";
+            return;
+        }
+        try
+        {
+            var reg = Catalog.Get(Form.PluginId);
+            var defaults = reg.DefaultOptionsFactory();
+            Form.OptionsJson = Catalog.SerializeOptions(defaults);
+        }
+        catch
+        {
+            // leave previous JSON
+        }
+        StateHasChanged();
+    }
+
+    private Type? OptionsTypeFor(string pluginId) =>
+        Catalog.TryGet(pluginId, out var reg) ? reg.OptionsType : null;
+
+    private async Task SubmitAsync()
+    {
+        _busy = true;
+        _error = null;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Form.PluginId))
+            {
+                throw new InvalidOperationException("Plugin is required");
+            }
+            // Validate that OptionsJson is valid JSON before saving.
+            using var _ = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(Form.OptionsJson) ? "{}" : Form.OptionsJson);
+
+            await DnsProvidersSvc.CreateAsync(Form.Name, Form.PluginId, Form.OptionsJson);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _busy = false;
+            return;
+        }
+
+        _busy = false;
+        Nav.NavigateTo("/settings/dns-providers");
+    }
+
+    public sealed class FormModel
+    {
+        [Required, StringLength(128, MinimumLength = 1)]
+        public string Name { get; set; } = "";
+
+        [Required, StringLength(256, MinimumLength = 1)]
+        public string PluginId { get; set; } = "";
+
+        public string OptionsJson { get; set; } = "{}";
+    }
+}

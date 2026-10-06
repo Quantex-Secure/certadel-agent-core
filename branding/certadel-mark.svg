@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Certadel">
+  <defs>
+    <linearGradient id="certadel-g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5C7CFA"/>
+      <stop offset="1" stop-color="#3B5BDB"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield with a crenellated (citadel) top -->
+  <path fill="url(#certadel-g)"
+        d="M12 12 L22 12 L22 18 L27 18 L27 12 L37 12 L37 18 L42 18 L42 12 L52 12 L52 34 Q52 47 32 56 Q12 47 12 34 Z"/>
+  <!-- Checkmark: valid / trusted -->
+  <path fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"
+        d="M23 35 l6.5 7 l12.5 -15"/>
+</svg>

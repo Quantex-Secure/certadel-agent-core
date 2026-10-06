@@ -1,0 +1,246 @@
+@page "/settings/import-acmesh"
+@rendermode InteractiveServer
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using AcmeManager.Service.Migration.AcmeSh
+@inject AcmeShImportService Import
+@inject DnsProvidersService DnsProvidersSvc
+
+<PageTitle>Import from acme.sh — Certadel Agent</PageTitle>
+
+<h2 class="mb-3">Import from acme.sh</h2>
+
+<div class="alert alert-info">
+    Reads an <strong>acme.sh</strong> installation on this host (all homes under
+    <code>/root</code> and <code>/home/*</code>) and imports its certificates as renewals.
+    DNS credentials come from your <a href="/settings/dns-providers" target="_blank">DNS provider profiles</a>
+    — pick one per provider below; the secret lives inside the profile.
+</div>
+
+<div class="mb-3">
+    <label class="form-label">acme.sh home (optional)</label>
+    <input class="form-control" @bind="_path" @bind:after="ScanAsync"
+           placeholder="(leave blank to auto-detect /root/.acme.sh and /home/*/.acme.sh)" />
+</div>
+
+@if (_preview is { } preview)
+{
+    @if (preview.Error is not null)
+    {
+        <div class="alert alert-warning">@preview.Error</div>
+    }
+    else
+    {
+        <div class="card mb-3">
+            <div class="card-header">
+                Found @preview.RenewalCount renewal(s) in <code>@preview.Home</code>
+                @if (preview.WithNotes > 0)
+                {
+                    <span class="badge bg-warning text-dark ms-2">@preview.WithNotes need attention</span>
+                }
+            </div>
+            <table class="table table-sm m-0">
+                <thead><tr>
+                    <th><input type="checkbox" checked="@AllSelected" @onchange="ToggleAll" title="Select all" /></th>
+                    <th>Domain</th><th>Names</th><th>Validation</th><th>Installs to</th><th></th>
+                </tr></thead>
+                <tbody>
+                    @foreach (var r in preview.Renewals)
+                    {
+                        <tr>
+                            <td><input type="checkbox" checked="@_selected.Contains(r.Name)" @onchange="() => Toggle(r.Name)" /></td>
+                            <td>@r.Name</td>
+                            <td class="small">@r.Identifiers</td>
+                            <td class="small"><code>@r.Validation</code></td>
+                            <td class="small"><code>@r.InstallPath</code></td>
+                            <td class="small text-muted">@string.Join(" ", r.Notes)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (preview.RenewalCount > 0)
+        {
+            <div class="card mb-3">
+                <div class="card-header">Import options</div>
+                <div class="card-body">
+
+                    <label class="form-label fw-semibold">1 · DNS provider</label>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-8">
+                            <select class="form-select" @bind="_dnsProfileId" @bind:after="ScanAsync">
+                                <option value="">— select a DNS provider —</option>
+                                @foreach (var p in _dnsProviders)
+                                {
+                                    <option value="@p.Id">@p.Name (@p.PluginId)</option>
+                                }
+                            </select>
+                            <div class="form-text">
+                                Applies to the selected certs. The secret lives in the profile.
+                                <a href="/settings/dns-providers" target="_blank">Manage / create</a>.
+                                Importing certs that use a different provider? Import them in a separate pass.
+                            </div>
+                        </div>
+                    </div>
+
+                    <label class="form-label fw-semibold mt-3">2 · Installation</label>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-4">
+                            <select class="form-select" @bind="_installerPluginId" @bind:after="ScanAsync">
+                                <option value="installer.haproxy">HAProxy</option>
+                                <option value="">None</option>
+                            </select>
+                        </div>
+                        @if (_installerPluginId == "installer.haproxy")
+                        {
+                            <div class="col-md-6">
+                                <input class="form-control" @bind="_haproxyCertDir" @bind:after="ScanAsync"
+                                       placeholder="/etc/haproxy/certs" />
+                            </div>
+                        }
+                    </div>
+
+                    <label class="form-label fw-semibold mt-3">3 · Store</label>
+                    <div class="row g-2 mb-1">
+                        <div class="col-md-4">
+                            <select class="form-select" @bind="_storePluginId" @bind:after="ScanAsync">
+                                <option value="">None (recommended for HAProxy)</option>
+                                <option value="store.pem">PEM bundle (split files)</option>
+                            </select>
+                        </div>
+                        @if (_storePluginId == "store.pem")
+                        {
+                            <div class="col-md-6">
+                                <input class="form-control" @bind="_storePath" @bind:after="ScanAsync"
+                                       placeholder="(defaults to /var/lib/acme-manager/pem)" />
+                            </div>
+                        }
+                    </div>
+                    <div class="form-text mb-3">
+                        For HAProxy leave this <strong>None</strong> — the installer already writes the combined cert.
+                        The PEM bundle (split cert/chain/key files, for nginx/Apache) must <strong>not</strong> point at
+                        HAProxy's cert dir, or HAProxy will fail to load the cert-only file.
+                    </div>
+
+                    <button class="btn btn-success" @onclick="ApplyAsync" disabled="@(_busy || _selected.Count == 0)">
+                        @(_busy ? "Importing…" : $"Import {_selected.Count} selected")
+                    </button>
+                    <button class="btn btn-outline-secondary" @onclick="SelectAll" disabled="@_busy">Select all</button>
+                    <button class="btn btn-outline-secondary" @onclick="SelectNone" disabled="@_busy">Select none</button>
+                </div>
+            </div>
+        }
+    }
+}
+
+@if (_result is { } result)
+{
+    @if (result.Error is not null)
+    {
+        <div class="alert alert-danger">@result.Error</div>
+    }
+    <div class="card mb-3">
+        <div class="card-header">Result — @result.Imported imported, @result.Skipped skipped</div>
+        @if (result.Items.Count > 0)
+        {
+            <table class="table table-sm m-0">
+                <tbody>
+                    @foreach (var item in result.Items)
+                    {
+                        <tr><td>@item.Name</td><td class="small text-muted">@item.Status</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+    @if (result.Imported > 0)
+    {
+        <a class="btn btn-outline-primary" href="/certificates">Review imported certificates</a>
+    }
+}
+
+@code {
+    private string _path = "";
+    private string _installerPluginId = "installer.haproxy";
+    private string _haproxyCertDir = "/etc/haproxy/certs";
+    private string _storePluginId = "";
+    private string _storePath = "";
+    private bool _busy;
+    private AcmeShImportPreview? _preview;
+    private AcmeShImportResult? _result;
+    private List<DnsProvider> _dnsProviders = [];
+    private Guid? _dnsProfileId;
+    private bool _selectionInitialized;
+    private HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool AllSelected => _preview is { } p && p.Renewals.Count > 0 && _selected.Count == p.Renewals.Count;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _dnsProviders = (await DnsProvidersSvc.ListAsync()).ToList();
+        await ScanAsync();
+    }
+
+    private async Task ScanAsync()
+    {
+        _result = null;
+        _preview = await Import.PreviewAsync(PathArg(), BuildChoices(), CancellationToken.None);
+
+        if (_preview is { Error: null } p)
+        {
+            // Default everything selected on the FIRST load only; afterwards preserve the
+            // operator's checkbox choices across option changes (just drop names that vanished).
+            if (!_selectionInitialized)
+            {
+                _selected = new HashSet<string>(p.Renewals.Select(r => r.Name), StringComparer.OrdinalIgnoreCase);
+                _selectionInitialized = true;
+            }
+            else
+            {
+                _selected.IntersectWith(p.Renewals.Select(r => r.Name));
+            }
+        }
+    }
+
+    private async Task ApplyAsync()
+    {
+        _busy = true;
+        try
+        {
+            _result = await Import.ApplyAsync(PathArg(), accountName: null, BuildChoices(), _selected.ToList(), CancellationToken.None);
+            _preview = await Import.PreviewAsync(PathArg(), BuildChoices(), CancellationToken.None);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private AcmeShImportChoices BuildChoices() => new(
+        InstallerPluginId: _installerPluginId,
+        HaProxyCertDir: _haproxyCertDir,
+        StorePluginId: _storePluginId,
+        StorePath: _storePath,
+        DnsProfileId: _dnsProfileId);
+
+    private void Toggle(string name)
+    {
+        if (!_selected.Remove(name)) _selected.Add(name);
+    }
+
+    private void ToggleAll(ChangeEventArgs e)
+    {
+        _selected = (bool)(e.Value ?? false) && _preview is { } p
+            ? new HashSet<string>(p.Renewals.Select(r => r.Name), StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void SelectAll() => _selected = _preview is { } p
+        ? new HashSet<string>(p.Renewals.Select(r => r.Name), StringComparer.OrdinalIgnoreCase)
+        : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    private void SelectNone() => _selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    private string? PathArg() => string.IsNullOrWhiteSpace(_path) ? null : _path.Trim();
+}

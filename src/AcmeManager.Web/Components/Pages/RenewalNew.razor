@@ -1,0 +1,411 @@
+@page "/certificates/new"
+@page "/renewals/new"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject DnsProvidersService DnsProvidersSvc
+@inject PluginCatalog Catalog
+@inject SecretsService SecretsSvc
+@inject NavigationManager Nav
+@using System.ComponentModel.DataAnnotations
+@using System.Text.Json
+@using AcmeManager.Core.Engine
+@using AcmeManager.Core.Plugins
+@using AcmeManager.Core.Security
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using AcmeManager.Plugins.Contracts
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>New certificate — Certadel Agent</PageTitle>
+
+<h2 class="mb-3">New certificate</h2>
+
+<p class="text-muted small">
+    Pick a plugin per step. Source / Store / Installation options pre-fill with each plugin's defaults — edit the JSON to suit.
+    For Validation, pick HTTP-01 + a plugin, or DNS-01 + one of your <a href="/settings/dns-providers">DNS provider profiles</a>.
+</p>
+
+<EditForm Model="Form" OnValidSubmit="CreateAsync" FormName="newRenewal">
+    <DataAnnotationsValidator />
+    <ValidationSummary class="alert alert-danger" />
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+
+    <div class="card mb-3">
+        <div class="card-header">1. Basics</div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label">Name</label>
+                    <InputText class="form-control" @bind-Value="Form.Name" placeholder="example.com" />
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label">Account</label>
+                    <InputSelect class="form-select" @bind-Value="Form.AccountId">
+                        <option value="">— select —</option>
+                        @foreach (var a in _accounts)
+                        {
+                            <option value="@a.Id">@a.Name</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label">Renew within (days)</label>
+                    <InputNumber class="form-control" @bind-Value="Form.RenewalWindowDays" />
+                </div>
+                <div class="col-12 mt-2">
+                    <div class="form-check">
+                        <InputCheckbox class="form-check-input" @bind-Value="Form.UseMaintenanceWindow" id="useWindow" />
+                        <label class="form-check-label" for="useWindow">Only renew automatically inside a maintenance window</label>
+                    </div>
+                    @if (Form.UseMaintenanceWindow)
+                    {
+                        <div class="row g-2 mt-1 align-items-end">
+                            <div class="col-md-5">
+                                <label class="form-label">Days</label>
+                                <div>
+                                    @for (var i = 0; i < 7; i++)
+                                    {
+                                        var idx = i;
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="@($"wd{idx}")" @bind="Form.WindowDays[idx]" />
+                                            <label class="form-check-label" for="@($"wd{idx}")">@(((DayOfWeek)idx).ToString()[..3])</label>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">From</label>
+                                <InputDate Type="InputDateType.Time" class="form-control" @bind-Value="Form.WindowStart" />
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label">Until</label>
+                                <InputDate Type="InputDateType.Time" class="form-control" @bind-Value="Form.WindowEnd" />
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">Time zone</label>
+                                <InputText class="form-control" @bind-Value="Form.WindowTimeZone" placeholder="server local" />
+                            </div>
+                        </div>
+                        <div class="form-text">Manual "Renew now" ignores the window. A range that ends before it starts runs overnight.</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <SingleStepCard Title="2. Source" Step="Form.Source" PluginsByCat="_byCategory" Category="PluginCategory.Source" />
+
+    <div class="card mb-3">
+        <div class="card-header">3. Validation</div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label me-3">Challenge type</label>
+                <div class="form-check form-check-inline">
+                    <input type="radio" class="form-check-input" id="vk-http01" name="vk"
+                           value="@ValidationKind.Http01"
+                           checked="@(Form.ValidationKind == ValidationKind.Http01)"
+                           @onchange="() => OnValidationKindChanged(ValidationKind.Http01)" />
+                    <label class="form-check-label" for="vk-http01">HTTP-01</label>
+                </div>
+                <div class="form-check form-check-inline">
+                    <input type="radio" class="form-check-input" id="vk-dns01" name="vk"
+                           value="@ValidationKind.Dns01"
+                           checked="@(Form.ValidationKind == ValidationKind.Dns01)"
+                           @onchange="() => OnValidationKindChanged(ValidationKind.Dns01)" />
+                    <label class="form-check-label" for="vk-dns01">DNS-01</label>
+                </div>
+            </div>
+
+            @if (Form.ValidationKind == ValidationKind.Http01)
+            {
+                <div class="mb-3">
+                    <label class="form-label">Plugin</label>
+                    <InputSelect class="form-select" @bind-Value="Form.Validation.PluginId" @bind-Value:after="OnHttp01PluginChanged">
+                        <option value="">— select —</option>
+                        @foreach (var p in _http01Plugins)
+                        {
+                            <option value="@p.Id">@p.Id</option>
+                        }
+                    </InputSelect>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(Form.Validation.PluginId))
+                {
+                    <PluginOptionsForm OptionsType="@OptionsTypeFor(Form.Validation.PluginId)"
+                                       OptionsJson="@Form.Validation.OptionsJson"
+                                       OptionsJsonChanged="@(json => Form.Validation.OptionsJson = json)" />
+                }
+            }
+            else
+            {
+                @if (_dnsProviders.Count == 0)
+                {
+                    <div class="alert alert-warning">
+                        No DNS provider profiles configured yet. <a href="/settings/dns-providers/new">Create one</a> before continuing.
+                    </div>
+                }
+                <div class="mb-0">
+                    <label class="form-label">DNS provider profile</label>
+                    <InputSelect class="form-select" @bind-Value="Form.ValidationDnsProviderId">
+                        <option value="">— select —</option>
+                        @foreach (var p in _dnsProviders)
+                        {
+                            <option value="@p.Id">@p.Name (@p.PluginId)</option>
+                        }
+                    </InputSelect>
+                    <div class="form-text">
+                        The profile's plugin id + options will be snapshotted into this renewal at create time.
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+    <MultiStepCard Title="4. Stores" Steps="Form.Stores" PluginsByCat="_byCategory" Category="PluginCategory.Store" />
+    <MultiStepCard Title="5. Installations" Steps="Form.Installations" PluginsByCat="_byCategory" Category="PluginCategory.Installation" />
+
+    <button type="submit" class="btn btn-primary" disabled="@_busy">
+        @(_busy ? "Creating…" : "Create certificate")
+    </button>
+    <a href="/certificates" class="btn btn-outline-secondary">Cancel</a>
+</EditForm>
+
+@code {
+    public enum ValidationKind { Http01, Dns01 }
+
+    public sealed class FormModel
+    {
+        [Required, StringLength(128, MinimumLength = 1)]
+        public string Name { get; set; } = "";
+
+        [Required]
+        public Guid? AccountId { get; set; }
+
+        [Range(1, 89)]
+        public int RenewalWindowDays { get; set; } = 30;
+
+        public bool UseMaintenanceWindow { get; set; }
+        public bool[] WindowDays { get; set; } = new bool[7];
+        public TimeOnly WindowStart { get; set; } = new(1, 0);
+        public TimeOnly WindowEnd { get; set; } = new(5, 0);
+        public string WindowTimeZone { get; set; } = "";
+
+        public string? MaintenanceWindowJson()
+        {
+            if (!UseMaintenanceWindow) return null;
+            var days = Enumerable.Range(0, 7).Where(i => WindowDays[i]).Select(i => ((DayOfWeek)i).ToString().ToLowerInvariant());
+            return System.Text.Json.JsonSerializer.Serialize(new { days, start = WindowStart.ToString("HH:mm"), end = WindowEnd.ToString("HH:mm"), timeZone = string.IsNullOrWhiteSpace(WindowTimeZone) ? null : WindowTimeZone.Trim() });
+        }
+
+        public void LoadMaintenanceWindow(string? json)
+        {
+            var window = MaintenanceWindow.Parse(json);
+            UseMaintenanceWindow = window is not null;
+            if (window is null) return;
+            for (var i = 0; i < 7; i++) WindowDays[i] = window.Days.Contains((DayOfWeek)i);
+            WindowStart = window.Start;
+            WindowEnd = window.End;
+            WindowTimeZone = window.TimeZoneId ?? "";
+        }
+
+        public StepModel Source { get; set; } = new();
+
+        public ValidationKind ValidationKind { get; set; } = ValidationKind.Dns01;
+        public StepModel Validation { get; set; } = new();
+        public Guid? ValidationDnsProviderId { get; set; }
+
+        public List<StepModel> Stores { get; set; } = [new()];
+        public List<StepModel> Installations { get; set; } = [new()];
+    }
+
+    public FormModel Form { get; set; } = default!;
+
+    private List<Account> _accounts = [];
+    private List<DnsProvider> _dnsProviders = [];
+    private List<PluginRegistration> _http01Plugins = [];
+    private Dictionary<PluginCategory, List<PluginRegistration>> _byCategory = new();
+    private bool _busy;
+    private string? _error;
+
+    protected override void OnInitialized() => Form ??= new FormModel();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _byCategory = Catalog.All
+            .GroupBy(p => p.Category)
+            .ToDictionary(g => g.Key, g => g.OrderBy(p => p.Id).ToList());
+
+        _http01Plugins = Catalog.All
+            .Where(p => p.Category == PluginCategory.Validation
+                        && p.Id.StartsWith("validation.http-01.", StringComparison.Ordinal))
+            .OrderBy(p => p.Id)
+            .ToList();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var accounts = await db.Accounts.AsNoTracking().ToListAsync();
+        _accounts = accounts.OrderBy(a => a.Name).ToList();
+
+        var providers = await DnsProvidersSvc.ListAsync();
+        _dnsProviders = providers.OrderBy(p => p.Name).ToList();
+    }
+
+    private void OnValidationKindChanged(ValidationKind kind)
+    {
+        Form.ValidationKind = kind;
+        // Clear cross-mode state so the form picker stays sensible.
+        if (kind == ValidationKind.Http01)
+        {
+            Form.ValidationDnsProviderId = null;
+        }
+        else
+        {
+            Form.Validation = new StepModel();
+        }
+    }
+
+    private void OnHttp01PluginChanged()
+    {
+        if (string.IsNullOrWhiteSpace(Form.Validation.PluginId))
+        {
+            Form.Validation.OptionsJson = "{}";
+            return;
+        }
+        try
+        {
+            var reg = Catalog.Get(Form.Validation.PluginId);
+            var defaults = reg.DefaultOptionsFactory();
+            Form.Validation.OptionsJson = Catalog.SerializeOptions(defaults);
+        }
+        catch { /* leave previous */ }
+        StateHasChanged();
+    }
+
+    private Type? OptionsTypeFor(string pluginId) =>
+        Catalog.TryGet(pluginId, out var reg) ? reg.OptionsType : null;
+
+    private async Task CreateAsync()
+    {
+        if (_busy)
+        {
+            return; // a second click while the first save is still running
+        }
+        _busy = true;
+        _error = null;
+        Guid newId;
+
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Form.Source.PluginId))
+            {
+                throw new InvalidOperationException("Source plugin is required");
+            }
+
+            // Resolve the validation step depending on chosen kind.
+            StepModel validationStep;
+            if (Form.ValidationKind == ValidationKind.Http01)
+            {
+                if (string.IsNullOrWhiteSpace(Form.Validation.PluginId))
+                {
+                    throw new InvalidOperationException("HTTP-01 validation plugin is required");
+                }
+                validationStep = Form.Validation;
+            }
+            else
+            {
+                if (Form.ValidationDnsProviderId is null)
+                {
+                    throw new InvalidOperationException("Pick a DNS provider profile");
+                }
+                var profile = await DnsProvidersSvc.GetAsync(Form.ValidationDnsProviderId.Value)
+                    ?? throw new InvalidOperationException("Selected DNS provider was not found");
+                validationStep = new StepModel
+                {
+                    PluginId = profile.PluginId,
+                    OptionsJson = profile.OptionsJson,
+                };
+            }
+
+            var renewal = new Renewal
+            {
+                Name = Form.Name,
+                AccountId = Form.AccountId!.Value,
+                RenewalWindowDays = Form.RenewalWindowDays,
+                MaintenanceWindowJson = MaintenanceWindow.Parse(Form.MaintenanceWindowJson())?.ToJson(),
+                SourceJson = SerializeStep(Form.Source),
+                ValidationJson = SerializeStep(validationStep),
+                StoresJson = SerializeSteps(Form.Stores),
+                InstallationsJson = SerializeSteps(Form.Installations),
+                Enabled = true,
+            };
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            if (await db.Renewals.AnyAsync(r => r.Name == renewal.Name))
+            {
+                throw new InvalidOperationException($"A certificate named '{renewal.Name}' already exists.");
+            }
+
+            // Write-only credentials typed into the form become encrypted secrets,
+            // written just before the renewal itself is saved.
+            var inline = new[]
+            {
+                InlineSecrets.Extract(Catalog, renewal.SourceJson, renewal.Name),
+                InlineSecrets.Extract(Catalog, renewal.ValidationJson, renewal.Name),
+                InlineSecrets.Extract(Catalog, renewal.StoresJson, renewal.Name),
+                InlineSecrets.Extract(Catalog, renewal.InstallationsJson, renewal.Name),
+            };
+            (renewal.SourceJson, renewal.ValidationJson, renewal.StoresJson, renewal.InstallationsJson) =
+                (inline[0].Json, inline[1].Json, inline[2].Json, inline[3].Json);
+            foreach (var e in inline)
+            {
+                await e.CommitAsync(SecretsSvc.CreateOrReplaceAsync, CancellationToken.None);
+            }
+
+            db.Renewals.Add(renewal);
+            await db.SaveChangesAsync();
+            newId = renewal.Id;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _busy = false;
+            return;
+        }
+
+        _busy = false;
+        Nav.NavigateTo($"/certificates/{newId}");
+    }
+
+    private static string SerializeStep(StepModel s)
+    {
+        if (string.IsNullOrWhiteSpace(s.PluginId)) throw new InvalidOperationException("Plugin id missing");
+        var optionsObj = string.IsNullOrWhiteSpace(s.OptionsJson)
+            ? JsonDocument.Parse("{}").RootElement
+            : JsonDocument.Parse(s.OptionsJson).RootElement;
+        var wrapper = new PluginStepWire(s.PluginId, optionsObj.Clone());
+        return JsonSerializer.Serialize(wrapper, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        });
+    }
+
+    private static string SerializeSteps(IEnumerable<StepModel> steps)
+    {
+        var wires = steps
+            .Where(s => !string.IsNullOrWhiteSpace(s.PluginId))
+            .Select(s =>
+            {
+                var optionsObj = string.IsNullOrWhiteSpace(s.OptionsJson)
+                    ? JsonDocument.Parse("{}").RootElement
+                    : JsonDocument.Parse(s.OptionsJson).RootElement;
+                return new PluginStepWire(s.PluginId, optionsObj.Clone());
+            })
+            .ToList();
+        return JsonSerializer.Serialize(wires, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        });
+    }
+}

@@ -1,0 +1,75 @@
+@implements IDisposable
+@inject NavigationManager Nav
+
+<nav class="bg-dark text-white-50 d-flex flex-column p-3 nav-menu">
+    <h5 class="text-white mb-4">Certadel Agent</h5>
+    <ul class="nav flex-column flex-grow-1">
+        @foreach (var item in MainItems)
+        {
+            <li class="nav-item">
+                <NavLink class="nav-link" ActiveClass="active" href="@item.Href" Match="@item.Match">
+                    @item.Label
+                </NavLink>
+            </li>
+        }
+    </ul>
+    <ul class="nav flex-column border-top pt-3">
+        @foreach (var item in FooterItems)
+        {
+            <li class="nav-item">
+                <NavLink class="nav-link" ActiveClass="active" href="@item.Href">@item.Label</NavLink>
+            </li>
+        }
+    </ul>
+</nav>
+
+@code {
+    private record NavItem(string Href, string Label, NavLinkMatch Match = NavLinkMatch.Prefix);
+
+    private static readonly NavItem[] MainItems =
+    [
+        new("", "Dashboard", NavLinkMatch.All),
+        new("certificates/new", "New Certificate", NavLinkMatch.All),
+        new("certificates", "Certificates"),
+        new("coverage", "Coverage", NavLinkMatch.All),
+        new("handoff", "Handoff", NavLinkMatch.All),
+        new("history", "History"),
+        new("logs", "Logs"),
+    ];
+
+    // Import links are OS-specific: win-acme only on Windows, acme.sh only on Linux.
+    private static readonly NavItem[] FooterItems = BuildFooterItems();
+
+    private static NavItem[] BuildFooterItems()
+    {
+        var items = new List<NavItem> { new("settings", "Settings") };
+        if (OperatingSystem.IsWindows())
+        {
+            items.Add(new("settings/import-winacme", "Import win-acme", NavLinkMatch.All));
+        }
+        if (OperatingSystem.IsLinux())
+        {
+            items.Add(new("settings/import-acmesh", "Import acme.sh", NavLinkMatch.All));
+        }
+        return [.. items];
+    }
+
+    protected override void OnInitialized()
+    {
+        try
+        {
+            Nav.LocationChanged += OnLocationChanged;
+        }
+        catch { }
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        _ = InvokeAsync(() =>
+        {
+            try { StateHasChanged(); } catch { }
+        });
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+}

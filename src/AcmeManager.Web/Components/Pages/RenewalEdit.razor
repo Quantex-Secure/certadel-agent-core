@@ -1,0 +1,286 @@
+@page "/certificates/{Id:guid}/edit"
+@page "/renewals/{Id:guid}/edit"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject PluginCatalog Catalog
+@inject SecretsService SecretsSvc
+@inject NavigationManager Nav
+@using System.ComponentModel.DataAnnotations
+@using System.Text.Json
+@using AcmeManager.Core.Engine
+@using AcmeManager.Core.Plugins
+@using AcmeManager.Core.Security
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using AcmeManager.Web.Components.Shared
+@using AcmeManager.Plugins.Contracts
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Edit certificate — Certadel Agent</PageTitle>
+
+@if (_loading)
+{
+    <p class="text-muted">Loading…</p>
+}
+else if (_notFound)
+{
+    <div class="alert alert-danger">Certificate not found.</div>
+}
+else
+{
+    <h2 class="mb-3">Edit “@Form.Name”</h2>
+    <p class="text-muted small">
+        Adjust this certificate's configuration — e.g. fix the DNS zone, IIS site/host, or hostnames on an
+        imported renewal. Changes apply on the next issuance (use <strong>Renew now</strong> on the detail page to apply immediately).
+    </p>
+
+    <EditForm Model="Form" OnValidSubmit="SaveAsync" FormName="editRenewal">
+        <DataAnnotationsValidator />
+        <ValidationSummary class="alert alert-danger" />
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="alert alert-danger">@_error</div>
+        }
+
+        <div class="card mb-3">
+            <div class="card-header">Basics</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Name</label>
+                        <InputText class="form-control" @bind-Value="Form.Name" />
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Account</label>
+                        <InputSelect class="form-select" @bind-Value="Form.AccountId">
+                            <option value="">— select —</option>
+                            @foreach (var a in _accounts)
+                            {
+                                <option value="@a.Id">@a.Name</option>
+                            }
+                        </InputSelect>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Renew within (days)</label>
+                        <InputNumber class="form-control" @bind-Value="Form.RenewalWindowDays" />
+                    </div>
+                    <div class="col-12 mt-2">
+                        <div class="form-check">
+                            <InputCheckbox class="form-check-input" @bind-Value="Form.UseMaintenanceWindow" id="useWindow" />
+                            <label class="form-check-label" for="useWindow">Only renew automatically inside a maintenance window</label>
+                        </div>
+                        @if (Form.UseMaintenanceWindow)
+                        {
+                            <div class="row g-2 mt-1 align-items-end">
+                                <div class="col-md-5">
+                                    <label class="form-label">Days</label>
+                                    <div>
+                                        @for (var i = 0; i < 7; i++)
+                                        {
+                                            var idx = i;
+                                            <div class="form-check form-check-inline">
+                                                <input class="form-check-input" type="checkbox" id="@($"wd{idx}")" @bind="Form.WindowDays[idx]" />
+                                                <label class="form-check-label" for="@($"wd{idx}")">@(((DayOfWeek)idx).ToString()[..3])</label>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">From</label>
+                                    <InputDate Type="InputDateType.Time" class="form-control" @bind-Value="Form.WindowStart" />
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Until</label>
+                                    <InputDate Type="InputDateType.Time" class="form-control" @bind-Value="Form.WindowEnd" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Time zone</label>
+                                    <InputText class="form-control" @bind-Value="Form.WindowTimeZone" placeholder="server local" />
+                                </div>
+                            </div>
+                            <div class="form-text">Manual "Renew now" ignores the window. A range that ends before it starts runs overnight.</div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <SingleStepCard Title="Source" Step="Form.Source" PluginsByCat="_byCategory" Category="PluginCategory.Source" />
+        <SingleStepCard Title="Validation" Step="Form.Validation" PluginsByCat="_byCategory" Category="PluginCategory.Validation" />
+        <MultiStepCard Title="Stores" Steps="Form.Stores" PluginsByCat="_byCategory" Category="PluginCategory.Store" />
+        <MultiStepCard Title="Installations" Steps="Form.Installations" PluginsByCat="_byCategory" Category="PluginCategory.Installation" />
+
+        <button type="submit" class="btn btn-primary" disabled="@_busy">@(_busy ? "Saving…" : "Save changes")</button>
+        <a href="@($"/certificates/{Id}")" class="btn btn-outline-secondary">Cancel</a>
+    </EditForm>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    public sealed class FormModel
+    {
+        [Required, StringLength(128, MinimumLength = 1)]
+        public string Name { get; set; } = "";
+
+        [Required]
+        public Guid? AccountId { get; set; }
+
+        [Range(1, 89)]
+        public int RenewalWindowDays { get; set; } = 30;
+
+        public bool UseMaintenanceWindow { get; set; }
+        public bool[] WindowDays { get; set; } = new bool[7];
+        public TimeOnly WindowStart { get; set; } = new(1, 0);
+        public TimeOnly WindowEnd { get; set; } = new(5, 0);
+        public string WindowTimeZone { get; set; } = "";
+
+        public string? MaintenanceWindowJson()
+        {
+            if (!UseMaintenanceWindow) return null;
+            var days = Enumerable.Range(0, 7).Where(i => WindowDays[i]).Select(i => ((DayOfWeek)i).ToString().ToLowerInvariant());
+            return System.Text.Json.JsonSerializer.Serialize(new { days, start = WindowStart.ToString("HH:mm"), end = WindowEnd.ToString("HH:mm"), timeZone = string.IsNullOrWhiteSpace(WindowTimeZone) ? null : WindowTimeZone.Trim() });
+        }
+
+        public void LoadMaintenanceWindow(string? json)
+        {
+            var window = MaintenanceWindow.Parse(json);
+            UseMaintenanceWindow = window is not null;
+            if (window is null) return;
+            for (var i = 0; i < 7; i++) WindowDays[i] = window.Days.Contains((DayOfWeek)i);
+            WindowStart = window.Start;
+            WindowEnd = window.End;
+            WindowTimeZone = window.TimeZoneId ?? "";
+        }
+
+        public StepModel Source { get; set; } = new();
+        public StepModel Validation { get; set; } = new();
+        public List<StepModel> Stores { get; set; } = [];
+        public List<StepModel> Installations { get; set; } = [];
+    }
+
+    public FormModel Form { get; set; } = new();
+
+    private List<Account> _accounts = [];
+    private Dictionary<PluginCategory, List<PluginRegistration>> _byCategory = new();
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _byCategory = Catalog.All
+            .GroupBy(p => p.Category)
+            .ToDictionary(g => g.Key, g => g.OrderBy(p => p.Id).ToList());
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _accounts = (await db.Accounts.AsNoTracking().ToListAsync()).OrderBy(a => a.Name).ToList();
+
+        var r = await db.Renewals.AsNoTracking().FirstOrDefaultAsync(x => x.Id == Id);
+        if (r is null)
+        {
+            _notFound = true;
+            _loading = false;
+            return;
+        }
+
+        Form = new FormModel
+        {
+            Name = r.Name,
+            AccountId = r.AccountId,
+            RenewalWindowDays = r.RenewalWindowDays,
+            Source = ParseSingle(r.SourceJson),
+            Validation = ParseSingle(r.ValidationJson),
+            Stores = PluginStepSerializer.DeserializeList(r.StoresJson).Select(ToStep).ToList(),
+            Installations = PluginStepSerializer.DeserializeList(r.InstallationsJson).Select(ToStep).ToList(),
+        };
+        try { Form.LoadMaintenanceWindow(r.MaintenanceWindowJson); } catch (FormatException) { Form.UseMaintenanceWindow = false; }
+        if (Form.Stores.Count == 0) Form.Stores.Add(new());
+        if (Form.Installations.Count == 0) Form.Installations.Add(new());
+
+        _loading = false;
+    }
+
+    private static StepModel ToStep(PluginStepWire w) =>
+        new() { PluginId = w.PluginId, OptionsJson = w.Options?.GetRawText() ?? "{}" };
+
+    private static StepModel ParseSingle(string json)
+    {
+        try { return ToStep(PluginStepSerializer.DeserializeSingle(json)); }
+        catch { return new StepModel(); }
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Form.Source.PluginId))
+                throw new InvalidOperationException("Source plugin is required");
+            if (string.IsNullOrWhiteSpace(Form.Validation.PluginId))
+                throw new InvalidOperationException("Validation plugin is required");
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var r = await db.Renewals.FirstOrDefaultAsync(x => x.Id == Id)
+                ?? throw new InvalidOperationException("Certificate not found");
+
+            r.Name = Form.Name;
+            r.AccountId = Form.AccountId!.Value;
+            r.RenewalWindowDays = Form.RenewalWindowDays;
+            r.MaintenanceWindowJson = MaintenanceWindow.Parse(Form.MaintenanceWindowJson())?.ToJson();
+            // Write-only credentials typed into the form become encrypted secrets,
+            // written just before the renewal itself is saved.
+            var inline = new[]
+            {
+                InlineSecrets.Extract(Catalog, SerializeStep(Form.Source), r.Name, r.SourceJson),
+                InlineSecrets.Extract(Catalog, SerializeStep(Form.Validation), r.Name, r.ValidationJson),
+                InlineSecrets.Extract(Catalog, SerializeSteps(Form.Stores), r.Name, r.StoresJson),
+                InlineSecrets.Extract(Catalog, SerializeSteps(Form.Installations), r.Name, r.InstallationsJson),
+            };
+            (r.SourceJson, r.ValidationJson, r.StoresJson, r.InstallationsJson) =
+                (inline[0].Json, inline[1].Json, inline[2].Json, inline[3].Json);
+            foreach (var e in inline)
+            {
+                await e.CommitAsync(SecretsSvc.CreateOrReplaceAsync, CancellationToken.None);
+            }
+
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _busy = false;
+            return;
+        }
+
+        _busy = false;
+        Nav.NavigateTo($"/certificates/{Id}");
+    }
+
+    private static readonly JsonSerializerOptions Camel = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    private static string SerializeStep(StepModel s)
+    {
+        var options = string.IsNullOrWhiteSpace(s.OptionsJson)
+            ? JsonDocument.Parse("{}").RootElement
+            : JsonDocument.Parse(s.OptionsJson).RootElement;
+        return JsonSerializer.Serialize(new PluginStepWire(s.PluginId, options.Clone()), Camel);
+    }
+
+    private static string SerializeSteps(IEnumerable<StepModel> steps)
+    {
+        var wires = steps
+            .Where(s => !string.IsNullOrWhiteSpace(s.PluginId))
+            .Select(s =>
+            {
+                var options = string.IsNullOrWhiteSpace(s.OptionsJson)
+                    ? JsonDocument.Parse("{}").RootElement
+                    : JsonDocument.Parse(s.OptionsJson).RootElement;
+                return new PluginStepWire(s.PluginId, options.Clone());
+            })
+            .ToList();
+        return JsonSerializer.Serialize(wires, Camel);
+    }
+}

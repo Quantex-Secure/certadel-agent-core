@@ -1,0 +1,102 @@
+@page "/certificates"
+@page "/renewals"
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Certificates — Certadel Agent</PageTitle>
+
+<div class="d-flex align-items-center mb-3">
+    <h2 class="mb-0">Certificates</h2>
+    <a class="btn btn-primary ms-auto" href="/certificates/new">+ New certificate</a>
+</div>
+
+@if (_rows is null)
+{
+    <p class="text-muted">Loading…</p>
+}
+else if (_rows.Count == 0)
+{
+    <div class="card">
+        <div class="card-body text-muted">
+            No certificates yet. <a href="/certificates/new">Create one</a> to start issuing certs on a schedule.
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <table class="table table-sm m-0">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>Account</th>
+                    <th>Latest cert NotAfter</th>
+                    <th>Last attempt</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in _rows)
+                {
+                    <tr>
+                        <td>
+                            @if (r.Enabled)
+                            {
+                                <span class="badge bg-success">on</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-secondary">off</span>
+                            }
+                        </td>
+                        <td><a href="@($"/certificates/{r.Id}")"><strong>@r.Name</strong></a></td>
+                        <td class="small">@r.AccountName</td>
+                        <td class="small">
+                            @if (r.LatestNotAfter is null)
+                            {
+                                <span class="text-muted">never issued</span>
+                            }
+                            else
+                            {
+                                @r.LatestNotAfter.Value.LocalDateTime.ToString("yyyy-MM-dd")
+                            }
+                        </td>
+                        <td class="small text-muted">
+                            @(r.LastAttemptAt is null ? "—" : r.LastAttemptAt.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm"))
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private record Row(Guid Id, string Name, bool Enabled, string AccountName, DateTimeOffset? LatestNotAfter, DateTimeOffset? LastAttemptAt);
+
+    private List<Row>? _rows;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        var renewals = await db.Renewals.AsNoTracking().Include(r => r.Account).ToListAsync();
+        var certs = await db.Certificates.AsNoTracking().ToListAsync();
+        var latestByRenewal = certs
+            .GroupBy(c => c.RenewalId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.IssuedAt).First().NotAfter);
+
+        _rows = renewals
+            .OrderBy(r => r.Name)
+            .Select(r => new Row(
+                r.Id,
+                r.Name,
+                r.Enabled,
+                r.Account?.Name ?? "—",
+                latestByRenewal.GetValueOrDefault(r.Id),
+                r.LastAttemptAt))
+            .ToList();
+    }
+}

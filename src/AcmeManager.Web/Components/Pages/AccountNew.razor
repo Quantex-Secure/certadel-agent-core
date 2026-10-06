@@ -1,0 +1,168 @@
+@page "/settings/accounts/new"
+@rendermode InteractiveServer
+@inject AccountService AccountSvc
+@inject NavigationManager Nav
+@using System.ComponentModel.DataAnnotations
+@using AcmeManager.Core.Acme
+@using AcmeManager.Core.Acme.Accounts
+
+<PageTitle>New account — Certadel Agent</PageTitle>
+
+<h2 class="mb-3">New ACME account</h2>
+
+<div class="card">
+    <div class="card-body" style="max-width: 38rem">
+        <EditForm Model="Form" OnValidSubmit="HandleSubmitAsync" FormName="newAccount">
+            <DataAnnotationsValidator />
+            <ValidationSummary class="alert alert-danger" />
+
+            @if (!string.IsNullOrEmpty(_error))
+            {
+                <div class="alert alert-danger">@_error</div>
+            }
+
+            <div class="mb-3">
+                <label class="form-label">Name</label>
+                <InputText class="form-control" @bind-Value="Form.Name" placeholder="e.g. letsencrypt-prod" />
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Directory URL</label>
+                <div class="input-group">
+                    <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">Presets</button>
+                    <ul class="dropdown-menu">
+                        <li><button type="button" class="dropdown-item" @onclick="@(() => SetPreset("https://acme-v02.api.letsencrypt.org/directory", false))">Let's Encrypt (Production)</button></li>
+                        <li><button type="button" class="dropdown-item" @onclick="@(() => SetPreset("https://acme-staging-v02.api.letsencrypt.org/directory", false))">Let's Encrypt (Staging)</button></li>
+                        <li><hr class="dropdown-divider" /></li>
+                        <li><button type="button" class="dropdown-item" @onclick="@(() => SetPreset("https://api.test4.buypass.no/acme/directory", false))">Buypass Go (Test)</button></li>
+                        <li><button type="button" class="dropdown-item" @onclick="@(() => SetPreset("https://api.buypass.com/acme/directory", false))">Buypass Go (Production)</button></li>
+                        <li><button type="button" class="dropdown-item" @onclick="@(() => SetPreset("https://acme.zerossl.com/v2/DV90", true))">ZeroSSL (requires EAB)</button></li>
+                        <li><button type="button" class="dropdown-item" @onclick="@(() => SetPreset("https://dv.acme-v02.api.pki.goog/directory", true))">Google Trust Services (requires EAB)</button></li>
+                    </ul>
+                    <InputText class="form-control" @bind-Value="Form.DirectoryUrl" placeholder="https://acme-v02.api.letsencrypt.org/directory" />
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Contact email</label>
+                <InputText class="form-control" type="email" @bind-Value="Form.ContactEmail" />
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">Key algorithm</label>
+                <InputSelect class="form-select" @bind-Value="Form.Algorithm">
+                    @foreach (var alg in Enum.GetValues<AcmeKeyAlgorithm>())
+                    {
+                        <option value="@alg">@alg</option>
+                    }
+                </InputSelect>
+            </div>
+
+            <div class="form-check mb-3">
+                <InputCheckbox id="agreeTos" class="form-check-input" @bind-Value="Form.AgreeTermsOfService" />
+                <label class="form-check-label" for="agreeTos">I agree to the Certificate Authority's Terms of Service</label>
+            </div>
+
+            <hr />
+
+            <div class="form-check mb-3">
+                <InputCheckbox id="useEab" class="form-check-input" @bind-Value="Form.UseEab" />
+                <label class="form-check-label" for="useEab">CA requires External Account Binding (EAB)</label>
+            </div>
+
+            @if (Form.UseEab)
+            {
+                <div class="mb-3">
+                    <label class="form-label">EAB Key ID</label>
+                    <InputText class="form-control" @bind-Value="Form.EabKeyId" />
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">EAB HMAC key (base64url)</label>
+                    <InputText class="form-control" @bind-Value="Form.EabHmac" />
+                </div>
+            }
+
+            <button type="submit" class="btn btn-primary" disabled="@_busy">
+                @(_busy ? "Registering…" : "Create account")
+            </button>
+            <a href="/settings/accounts" class="btn btn-outline-secondary">Cancel</a>
+        </EditForm>
+    </div>
+</div>
+
+@code {
+    public FormModel Form { get; set; } = default!;
+
+    private bool _busy;
+    private string? _error;
+
+    protected override void OnInitialized() => Form ??= new FormModel();
+
+    /// <summary>Apply a CA preset: set the directory URL and pre-tick EAB for CAs that require it.</summary>
+    private void SetPreset(string url, bool requiresEab)
+    {
+        Form.DirectoryUrl = url;
+        Form.UseEab = requiresEab;
+    }
+
+    private async Task HandleSubmitAsync()
+    {
+        if (!Form.AgreeTermsOfService)
+        {
+            _error = "You must agree to the Terms of Service to create an account.";
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+
+        try
+        {
+            EabCredentials? eab = Form.UseEab
+                ? new EabCredentials(Form.EabKeyId, Form.EabHmac)
+                : null;
+
+            await AccountSvc.CreateAsync(
+                name: Form.Name,
+                directoryUrl: new Uri(Form.DirectoryUrl),
+                contactEmail: Form.ContactEmail,
+                algorithm: Form.Algorithm,
+                eab: eab,
+                ct: default);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _busy = false;
+            return;
+        }
+
+        // NavigateTo lives OUTSIDE the try — under SSR form-submit it throws
+        // NavigationException to signal the framework to redirect, and catching
+        // it would surface as a fake user-facing error.
+        _busy = false;
+        Nav.NavigateTo("/settings/accounts");
+    }
+
+    public sealed class FormModel
+    {
+        [Required, StringLength(64, MinimumLength = 1)]
+        public string Name { get; set; } = "";
+
+        [Required, Url]
+        public string DirectoryUrl { get; set; } = "https://acme-staging-v02.api.letsencrypt.org/directory";
+
+        [Required, EmailAddress]
+        public string ContactEmail { get; set; } = "";
+
+        public AcmeKeyAlgorithm Algorithm { get; set; } = AcmeKeyAlgorithm.EcP256;
+
+        public bool AgreeTermsOfService { get; set; }
+
+        public bool UseEab { get; set; }
+
+        public string EabKeyId { get; set; } = "";
+
+        public string EabHmac { get; set; } = "";
+    }
+}

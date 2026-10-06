@@ -1,0 +1,36 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.8" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.9.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AcmeManager.Core\AcmeManager.Core.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Service\AcmeManager.Service.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Plugins.Contracts\AcmeManager.Plugins.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Plugins.BuiltIn\AcmeManager.Plugins.BuiltIn.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Plugins.Iis\AcmeManager.Plugins.Iis.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Plugins.Linux\AcmeManager.Plugins.Linux.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Plugins.Dns.Google\AcmeManager.Plugins.Dns.Google.csproj" />
+    <ProjectReference Include="..\..\src\AcmeManager.Plugins.Dns.Aws\AcmeManager.Plugins.Dns.Aws.csproj" />
+  </ItemGroup>
+
+</Project>

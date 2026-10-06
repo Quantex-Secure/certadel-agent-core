@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AcmeManager.Api.Contracts/AcmeManager.Api.Contracts.csproj" />
+    <Project Path="src/AcmeManager.Core/AcmeManager.Core.csproj" />
+    <Project Path="src/AcmeManager.Plugins.BuiltIn/AcmeManager.Plugins.BuiltIn.csproj" />
+    <Project Path="src/AcmeManager.Plugins.Contracts/AcmeManager.Plugins.Contracts.csproj" />
+    <Project Path="src/AcmeManager.Plugins.Dns.Aws/AcmeManager.Plugins.Dns.Aws.csproj" />
+    <Project Path="src/AcmeManager.Plugins.Dns.Azure/AcmeManager.Plugins.Dns.Azure.csproj" />
+    <Project Path="src/AcmeManager.Plugins.Dns.Google/AcmeManager.Plugins.Dns.Google.csproj" />
+    <Project Path="src/AcmeManager.Plugins.Iis/AcmeManager.Plugins.Iis.csproj" />
+    <Project Path="src/AcmeManager.Plugins.Linux/AcmeManager.Plugins.Linux.csproj" />
+    <Project Path="src/AcmeManager.Service/AcmeManager.Service.csproj" />
+    <Project Path="src/AcmeManager.Web/AcmeManager.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AcmeManager.Tests/AcmeManager.Tests.csproj" />
+  </Folder>
+</Solution>

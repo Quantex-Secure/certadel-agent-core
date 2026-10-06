@@ -1,0 +1,261 @@
+@page "/settings/import-winacme"
+@rendermode InteractiveServer
+@using AcmeManager.Core.Plugins
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using AcmeManager.Service.Migration.WinAcme
+@using Microsoft.EntityFrameworkCore
+@inject WinAcmeImportService Import
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject ICertStoreCatalog CertStoreCatalog
+
+<PageTitle>Import from win-acme — Certadel Agent</PageTitle>
+
+<h2 class="mb-3">Import from win-acme</h2>
+
+<div class="alert alert-info">
+    Reads win-acme's renewal store on <strong>this machine</strong> and imports the
+    renewals (and, by default, the win-acme ACME account — same key, same registration).
+    win-acme encrypts secrets with Windows DPAPI, so the import only works on the same
+    machine — and under the same user context — that ran win-acme.
+</div>
+
+<div class="card mb-3">
+    <div class="card-header">Source</div>
+    <div class="card-body">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-8">
+                <label class="form-label">win-acme configuration folder (blank = auto-detect under %ProgramData%)</label>
+                <input class="form-control" @bind="_path" placeholder="C:\ProgramData\win-acme" />
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-primary" @onclick="ScanAsync" disabled="@_busy">Scan</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (_preview is { } preview)
+{
+    @if (preview.Error is not null)
+    {
+        <div class="alert alert-warning">@preview.Error</div>
+    }
+    else
+    {
+        <p>
+            Found <strong>@preview.RenewalCount</strong> renewal(s) in <code>@preview.BaseDir</code>
+            @if (preview.WithNotes > 0)
+            {
+                <span> — @preview.WithNotes need(s) review after import (see notes below)</span>
+            }
+        </p>
+
+        @foreach (var ca in preview.CaFolders)
+        {
+            <div class="card mb-3">
+                <div class="card-header">
+                    <code class="small">@ca.Path</code>
+                    <span class="text-muted small ms-2">account: @ca.AccountUrl</span>
+                </div>
+                <table class="table table-sm m-0 align-middle">
+                    <thead>
+                        <tr><th></th><th>Renewal</th><th>Source</th><th>Validation</th><th>Stores</th><th>Installations</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in ca.Renewals)
+                        {
+                            <tr>
+                                <td><input type="checkbox" checked="@_selected.Contains(r.Name)" @onchange="() => Toggle(r.Name)" /></td>
+                                <td>@r.Name</td>
+                                <td><code class="small">@r.SourcePluginId</code></td>
+                                <td><code class="small">@r.ValidationPluginId</code></td>
+                                <td><code class="small">@r.StorePluginIds</code></td>
+                                <td><code class="small">@r.InstallationPluginIds</code></td>
+                            </tr>
+                            @if (r.Notes.Count > 0)
+                            {
+                                <tr>
+                                    <td colspan="6" class="small text-warning-emphasis bg-warning-subtle">
+                                        @foreach (var n in r.Notes)
+                                        {
+                                            <div>⚠ @n</div>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        @if (preview.RenewalCount > 0)
+        {
+            <div class="card mb-3">
+                <div class="card-header">Import</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Run the imported renewals under</label>
+                        <select class="form-select" @bind="_accountSel">
+                            <option value="">The win-acme account (imported — recommended)</option>
+                            @foreach (var a in _accounts)
+                            {
+                                <option value="@a.Name">@a.Name (@a.DirectoryUrl)</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Azure DNS client secret</label>
+                        <select class="form-select" @bind="_azureSecretSel" @bind:after="ScanAsync">
+                            <option value="">— set per renewal later —</option>
+                            @foreach (var s in _secrets)
+                            {
+                                <option value="@s">@s</option>
+                            }
+                        </select>
+                        <div class="form-text">
+                            Existing agent secret to use for Azure DNS-01 validation (the service-principal
+                            secret you created at setup). win-acme's stored secret is never imported.
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Certificate store</label>
+                            <select class="form-select" @bind="_storeSel">
+                                <option value="">— keep win-acme's store —</option>
+                                @foreach (var s in _certStores)
+                                {
+                                    <option value="@s">@s</option>
+                                }
+                            </select>
+                            <div class="form-text">
+                                Where issued certs are stored on this host. IIS sites bind from
+                                <code>WebHosting</code>; "keep win-acme's" uses each renewal's original store.
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Store location</label>
+                            <select class="form-select" @bind="_locationSel">
+                                <option value="LocalMachine">LocalMachine</option>
+                                <option value="CurrentUser">CurrentUser</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button class="btn btn-success" @onclick="ApplyAsync" disabled="@(_busy || _selected.Count == 0)">
+                        @(_busy ? "Importing…" : $"Import {_selected.Count} selected")
+                    </button>
+                    <button class="btn btn-outline-secondary" @onclick="SelectAll" disabled="@_busy">Select all</button>
+                    <button class="btn btn-outline-secondary" @onclick="SelectNone" disabled="@_busy">Select none</button>
+                </div>
+            </div>
+        }
+    }
+}
+
+@if (_result is { } result)
+{
+    @if (result.Error is not null)
+    {
+        <div class="alert alert-danger">@result.Error</div>
+    }
+    <div class="card mb-3">
+        <div class="card-header">Result — @result.Imported imported, @result.Skipped skipped</div>
+        @if (result.Items.Count > 0)
+        {
+            <table class="table table-sm m-0">
+                <tbody>
+                    @foreach (var item in result.Items)
+                    {
+                        <tr><td>@item.Name</td><td class="small text-muted">@item.Status</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+    @if (result.Imported > 0)
+    {
+        <a class="btn btn-outline-primary" href="/certificates">Review imported certificates</a>
+    }
+}
+
+@code {
+    private string _path = "";
+    private string _accountSel = "";
+    private string _azureSecretSel = "";
+    private string _storeSel = "";
+    private string _locationSel = "LocalMachine";
+    private bool _busy;
+    private WinAcmeImportPreview? _preview;
+    private WinAcmeImportResult? _result;
+    private List<Account> _accounts = [];
+    private List<string> _secrets = [];
+    private List<string> _certStores = [];
+    private HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
+
+    private IEnumerable<string> AllNames() =>
+        _preview?.CaFolders.SelectMany(c => c.Renewals).Select(r => r.Name) ?? [];
+
+    private void Toggle(string name)
+    {
+        if (!_selected.Remove(name)) _selected.Add(name);
+    }
+
+    private void SelectAll() => _selected = new HashSet<string>(AllNames(), StringComparer.OrdinalIgnoreCase);
+    private void SelectNone() => _selected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _accounts = await db.Accounts.AsNoTracking().OrderBy(a => a.Name).ToListAsync();
+        _secrets = await db.Secrets.AsNoTracking().OrderBy(s => s.Name).Select(s => s.Name).ToListAsync();
+        // Default to a single existing secret, or one whose name mentions Azure.
+        _azureSecretSel = _secrets.Count == 1
+            ? _secrets[0]
+            : _secrets.FirstOrDefault(s => s.Contains("azure", StringComparison.OrdinalIgnoreCase)) ?? "";
+
+        _certStores = CertStoreCatalog.ListStoreNames().ToList();
+        // Default to WebHosting — the IIS central SSL store these migrations need.
+        _storeSel = _certStores.FirstOrDefault(s => s.Equals("WebHosting", StringComparison.OrdinalIgnoreCase)) ?? "";
+
+        await ScanAsync();
+    }
+
+    private Task ScanAsync()
+    {
+        _result = null;
+        _preview = Import.Preview(PathArg(), AzureSecretArg(), StoreArg(), _locationSel);
+        // Default to all selected; the operator unchecks what they don't want.
+        _selected = new HashSet<string>(AllNames(), StringComparer.OrdinalIgnoreCase);
+        return Task.CompletedTask;
+    }
+
+    private async Task ApplyAsync()
+    {
+        _busy = true;
+        try
+        {
+            _result = await Import.ApplyAsync(
+                PathArg(),
+                accountName: string.IsNullOrEmpty(_accountSel) ? null : _accountSel,
+                noAccountImport: false,
+                CancellationToken.None,
+                azureSecretName: AzureSecretArg(),
+                certStoreName: StoreArg(),
+                certStoreLocation: _locationSel,
+                selectedNames: _selected.ToList());
+            // Refresh the preview so already-imported renewals show as existing next time.
+            _preview = Import.Preview(PathArg(), AzureSecretArg(), StoreArg(), _locationSel);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private string? PathArg() => string.IsNullOrWhiteSpace(_path) ? null : _path.Trim();
+
+    private string? AzureSecretArg() => string.IsNullOrEmpty(_azureSecretSel) ? null : _azureSecretSel;
+
+    private string? StoreArg() => string.IsNullOrEmpty(_storeSel) ? null : _storeSel;
+}

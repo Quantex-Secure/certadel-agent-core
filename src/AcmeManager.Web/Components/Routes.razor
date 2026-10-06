@@ -1,0 +1,19 @@
+﻿<Router AppAssembly="typeof(Routes).Assembly"
+        AdditionalAssemblies="HostAssemblies"
+        NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>
+
+@code {
+    // The host app (AcmeManager.Service) contributes routable pages of its own
+    // (e.g. the win-acme import page). This RCL can't reference the host, so
+    // discover it via the entry assembly; in test hosts that assembly simply
+    // has no components.
+    private static readonly System.Reflection.Assembly[] HostAssemblies =
+        System.Reflection.Assembly.GetEntryAssembly() is { } entry && entry != typeof(Routes).Assembly
+            ? [entry]
+            : [];
+}

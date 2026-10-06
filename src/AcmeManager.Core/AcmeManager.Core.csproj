@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\AcmeManager.Plugins.Contracts\AcmeManager.Plugins.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Internal helpers under test (e.g. the ACME chain-PEM assembly). -->
+    <InternalsVisibleTo Include="AcmeManager.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Certes" Version="3.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.8" />
+    <!-- Pin the native SQLite bundle above the version EF pulls transitively:
+         SQLitePCLRaw.lib.e_sqlite3 <= 2.1.11 ships SQLite < 3.50.2 and is flagged
+         for CVE-2025-6965 (GHSA-2m69-gcr7-jv3q). 2.1.13 bundles the fixed engine.
+         Remove once EF Core's transitive reference moves past 2.1.11. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.8" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.8" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

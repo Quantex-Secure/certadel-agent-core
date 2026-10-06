@@ -1,0 +1,306 @@
+@using System.Reflection
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@using AcmeManager.Core.Engine
+@using AcmeManager.Core.Plugins
+@using AcmeManager.Core.Storage
+@using AcmeManager.Plugins.Contracts
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.DependencyInjection
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject IServiceProvider Services
+
+@if (OptionsType is null)
+{
+    <div class="text-muted small">No plugin selected.</div>
+}
+else if (!EditableProperties().Any())
+{
+    <div class="text-muted small">This plugin has no configurable options.</div>
+}
+else
+{
+    @foreach (var prop in EditableProperties())
+    {
+        var key = ToCamelCase(prop.Name);
+        var label = ToDisplayLabel(prop.Name);
+        var underlying = Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType;
+
+        <div class="mb-3">
+            <label class="form-label">@label</label>
+
+            @if (underlying == typeof(bool))
+            {
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input"
+                           checked="@GetBool(key)"
+                           @onchange="(e) => SetAsync(key, JsonValue.Create((bool)(e.Value ?? false)))" />
+                </div>
+            }
+            else if (underlying.IsEnum)
+            {
+                <select class="form-select"
+                        @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString()))">
+                    <option value="" selected="@(string.IsNullOrEmpty(GetString(key)))">— select —</option>
+                    @foreach (var n in Enum.GetNames(underlying))
+                    {
+                        var camel = ToCamelCase(n);
+                        var current = GetString(key);
+                        <option value="@camel" selected="@(string.Equals(current, camel, StringComparison.OrdinalIgnoreCase) || string.Equals(current, n, StringComparison.OrdinalIgnoreCase))">@n</option>
+                    }
+                </select>
+            }
+            else if (underlying == typeof(int) || underlying == typeof(long))
+            {
+                <input type="number" class="form-control"
+                       value="@GetString(key)"
+                       @onchange="(e) => SetNumberAsync(key, e.Value?.ToString())" />
+            }
+            else if (underlying == typeof(TimeSpan))
+            {
+                <input type="text" class="form-control font-monospace"
+                       value="@GetString(key)"
+                       placeholder="00:00:30"
+                       @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString()))" />
+                <div class="form-text">Format: <code>hh:mm:ss</code> (e.g. <code>00:00:30</code> for 30 seconds).</div>
+            }
+            else if (underlying != typeof(string)
+                     && typeof(System.Collections.IEnumerable).IsAssignableFrom(underlying))
+            {
+                <textarea class="form-control font-monospace small" rows="4"
+                          @onchange="(e) => SetListAsync(key, e.Value?.ToString())">@JoinList(key)</textarea>
+                <div class="form-text">One item per line.</div>
+            }
+            else if (InlineSecretOf(prop) is { } inline)
+            {
+                var stored = !string.IsNullOrEmpty(GetString(ToCamelCase(inline.SecretNameProperty)));
+                <input type="password" class="form-control" autocomplete="new-password"
+                       value="@GetString(key)"
+                       placeholder="@(stored ? "Stored — leave blank to keep it" : "")"
+                       @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString()))" />
+                <div class="form-text">Saved encrypted on this agent; never shown again.</div>
+            }
+            else if (IsSecretRef(prop))
+            {
+                var current = GetString(key);
+                <select class="form-select"
+                        @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString() ?? string.Empty))">
+                    <option value="" selected="@string.IsNullOrEmpty(current)">— select a secret —</option>
+                    @foreach (var name in SecretOptions(current))
+                    {
+                        <option value="@name" selected="@(string.Equals(current, name, StringComparison.Ordinal))">@name</option>
+                    }
+                </select>
+                <div class="form-text">
+                    References a stored secret by name.
+                    <a href="/settings/secrets/new" target="_blank" rel="noopener">Add a secret</a> if it isn't listed.
+                </div>
+            }
+            else if (IsIisSiteRef(prop) && _iisSites.Count > 0)
+            {
+                var current = GetString(key);
+                <select class="form-select"
+                        @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString() ?? string.Empty))">
+                    <option value="" selected="@string.IsNullOrEmpty(current)">— select an IIS site —</option>
+                    @foreach (var site in IisOptions(current))
+                    {
+                        <option value="@site" selected="@(string.Equals(current, site, StringComparison.Ordinal))">@site</option>
+                    }
+                </select>
+                <div class="form-text">IIS sites detected on this host.</div>
+            }
+            else if (IsCertStoreRef(prop) && _certStores.Count > 0)
+            {
+                var current = GetString(key);
+                <select class="form-select"
+                        @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString() ?? string.Empty))">
+                    @foreach (var s in CertStoreOptions(current))
+                    {
+                        <option value="@s" selected="@(string.Equals(current, s, StringComparison.OrdinalIgnoreCase))">@s</option>
+                    }
+                </select>
+                <div class="form-text">Windows certificate stores on this host.</div>
+            }
+            else
+            {
+                <input type="text" class="form-control"
+                       value="@GetString(key)"
+                       @onchange="(e) => SetAsync(key, JsonValue.Create(e.Value?.ToString()))" />
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public Type? OptionsType { get; set; }
+
+    [Parameter] public string OptionsJson { get; set; } = "{}";
+
+    [Parameter] public EventCallback<string> OptionsJsonChanged { get; set; }
+
+    private JsonObject _values = new();
+    private string? _lastSeenInput;
+    private List<string> _secretNames = [];
+    private List<string> _iisSites = [];
+    private List<string> _certStores = [];
+    private bool _lookupsLoaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // The first time we render a type that needs them, load the secret names
+        // and/or IIS site list (covers the plugin being picked after init).
+        if (_lookupsLoaded || OptionsType is null) return;
+        var props = OptionsType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+
+        if (props.Any(IsSecretRefProp))
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            _secretNames = await db.Secrets.AsNoTracking().Select(s => s.Name).OrderBy(n => n).ToListAsync();
+        }
+        if (props.Any(IsIisSiteRefProp))
+        {
+            _iisSites = Services.GetService<IIisSiteCatalog>()?.ListSiteNames().ToList() ?? [];
+        }
+        if (props.Any(IsCertStoreRefProp))
+        {
+            _certStores = Services.GetService<ICertStoreCatalog>()?.ListStoreNames().ToList() ?? [];
+        }
+        _lookupsLoaded = true;
+    }
+
+    private static InlineSecretAttribute? InlineSecretOf(PropertyInfo prop) =>
+        prop.PropertyType == typeof(string) ? prop.GetCustomAttribute<InlineSecretAttribute>() : null;
+
+    private static bool IsCertStoreRefProp(PropertyInfo p) =>
+        p.GetCustomAttribute<CertStoreReferenceAttribute>() is not null;
+
+    private static bool IsCertStoreRef(PropertyInfo prop) =>
+        IsCertStoreRefProp(prop)
+        && (Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType) == typeof(string);
+
+    private IEnumerable<string> CertStoreOptions(string current) => WithCurrentFirst(current, _certStores);
+
+    private static bool IsSecretRefProp(PropertyInfo p) =>
+        p.GetCustomAttribute<SecretReferenceAttribute>() is not null;
+
+    private static bool IsSecretRef(PropertyInfo prop) =>
+        IsSecretRefProp(prop)
+        && (Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType) == typeof(string);
+
+    private static bool IsIisSiteRefProp(PropertyInfo p) =>
+        p.GetCustomAttribute<IisSiteReferenceAttribute>() is not null;
+
+    private static bool IsIisSiteRef(PropertyInfo prop) =>
+        IsIisSiteRefProp(prop)
+        && (Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType) == typeof(string);
+
+    // Existing/imported value first (so a value that isn't in the live list is preserved & visible), then the looked-up values.
+    private IEnumerable<string> SecretOptions(string current) => WithCurrentFirst(current, _secretNames);
+    private IEnumerable<string> IisOptions(string current) => WithCurrentFirst(current, _iisSites);
+
+    private static IEnumerable<string> WithCurrentFirst(string current, List<string> values)
+    {
+        if (!string.IsNullOrEmpty(current) && !values.Contains(current, StringComparer.Ordinal))
+        {
+            yield return current;
+        }
+        foreach (var v in values) yield return v;
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Only re-parse when the parent sends a value we haven't just emitted ourselves.
+        if (_lastSeenInput == OptionsJson && _values.Count > 0) return;
+        _lastSeenInput = OptionsJson;
+        try
+        {
+            _values = JsonNode.Parse(string.IsNullOrWhiteSpace(OptionsJson) ? "{}" : OptionsJson) as JsonObject ?? new JsonObject();
+        }
+        catch
+        {
+            _values = new JsonObject();
+        }
+    }
+
+    private IEnumerable<PropertyInfo> EditableProperties() =>
+        OptionsType is null
+            ? []
+            : OptionsType.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(p => p.CanRead && p.CanWrite && p.Name != nameof(PluginOptions.SchemaVersion) && p.Name != "EqualityContract")
+                .Where(p => !InlineSecrets.IsManagedSecretName(p))
+                .OrderBy(p => p.Name);
+
+    private static string ToCamelCase(string name) =>
+        string.IsNullOrEmpty(name) || !char.IsUpper(name[0])
+            ? name
+            : char.ToLowerInvariant(name[0]) + name[1..];
+
+    private static string ToDisplayLabel(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        var sb = new System.Text.StringBuilder(name.Length + 4);
+        sb.Append(name[0]);
+        for (var i = 1; i < name.Length; i++)
+        {
+            var c = name[i];
+            var prev = name[i - 1];
+            if (char.IsUpper(c) && (char.IsLower(prev) || (i + 1 < name.Length && char.IsLower(name[i + 1]))))
+            {
+                sb.Append(' ');
+                sb.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+        return sb.ToString();
+    }
+
+    private string GetString(string key) => _values[key]?.ToString() ?? "";
+
+    private bool GetBool(string key) =>
+        _values[key] is JsonValue jv && jv.TryGetValue(out bool b) && b;
+
+    private string JoinList(string key) =>
+        _values[key] is JsonArray arr
+            ? string.Join("\n", arr.Select(n => n?.ToString() ?? ""))
+            : "";
+
+    private async Task SetAsync(string key, JsonNode? value)
+    {
+        _values[key] = value;
+        var json = _values.ToJsonString();
+        _lastSeenInput = json;
+        await OptionsJsonChanged.InvokeAsync(json);
+    }
+
+    private async Task SetNumberAsync(string key, string? value)
+    {
+        if (long.TryParse(value, out var n))
+        {
+            await SetAsync(key, JsonValue.Create(n));
+        }
+        else
+        {
+            await SetAsync(key, null);
+        }
+    }
+
+    private async Task SetListAsync(string key, string? value)
+    {
+        var arr = new JsonArray();
+        if (!string.IsNullOrEmpty(value))
+        {
+            foreach (var line in value.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length > 0)
+                {
+                    arr.Add(JsonValue.Create(trimmed));
+                }
+            }
+        }
+        await SetAsync(key, arr);
+    }
+}

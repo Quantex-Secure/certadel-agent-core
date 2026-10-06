@@ -1,0 +1,334 @@
+@page "/settings"
+@rendermode InteractiveServer
+@using System.Text.Json
+@using AcmeManager.Core.Discovery
+@using AcmeManager.Core.Engine
+@using AcmeManager.Core.Https
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.Configuration
+@using Microsoft.Extensions.DependencyInjection
+@inject INodeInfoProvider NodeInfoProvider
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject IEndpointCertificateState Endpoint
+@inject IServiceScopeFactory ScopeFactory
+@inject IConfiguration Configuration
+
+<PageTitle>Settings — Certadel Agent</PageTitle>
+
+<h2 class="mb-3">Settings</h2>
+
+@if (_node is not null)
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <h5 class="card-title">This node</h5>
+            <p class="card-text text-muted mb-2">
+                Identity advertised for central management. A console can discover this
+                server automatically on the local network (mDNS), or across subnets by
+                probing <code>/.well-known/acme-manager</code>.
+            </p>
+            <dl class="row mb-0 small">
+                <dt class="col-sm-3">Node ID</dt>
+                <dd class="col-sm-9"><code>@_node.NodeId</code></dd>
+                <dt class="col-sm-3">Name</dt>
+                <dd class="col-sm-9">@_node.Name</dd>
+                <dt class="col-sm-3">Address</dt>
+                <dd class="col-sm-9"><code>@($"https://{_node.Fqdn}:{_node.ApiPort}")</code></dd>
+                <dt class="col-sm-3">Version</dt>
+                <dd class="col-sm-9">@_node.Version (@_node.Os)</dd>
+                <dt class="col-sm-3">Discovery</dt>
+                <dd class="col-sm-9">
+                    @if (_discoveryEnabled)
+                    {
+                        <span class="badge bg-success">Advertising</span>
+                        <span class="text-muted">— visible to management consoles on this network.</span>
+                    }
+                    else
+                    {
+                        <span class="badge bg-secondary">Off</span>
+                        <span class="text-muted">— consoles can still add this agent by its address.</span>
+                    }
+                    <button type="button" class="btn btn-sm btn-outline-secondary ms-2" @onclick="ToggleDiscoveryAsync">
+                        @(_discoveryEnabled ? "Turn off" : "Turn on")
+                    </button>
+                    @if (_discoveryChanged)
+                    {
+                        <div class="form-text">Takes effect when the agent restarts.</div>
+                    }
+                </dd>
+            </dl>
+        </div>
+    </div>
+}
+
+<div class="card mb-3">
+    <div class="card-body">
+        <h5 class="card-title">Web UI certificate (:9443)</h5>
+        <p class="card-text mb-2">
+            @if (Endpoint.UsingIssuedCertificate)
+            {
+                <span class="badge bg-success">Issued certificate</span>
+                <span class="text-muted ms-1">
+                    Serving <code>@Endpoint.Subject</code>, expires
+                    @Endpoint.NotAfter.LocalDateTime.ToString("yyyy-MM-dd").
+                </span>
+            }
+            else
+            {
+                <span class="badge bg-warning text-dark">Self-signed</span>
+                <span class="text-muted ms-1">
+                    The browser will warn until you serve a CA-issued certificate for
+                    <code>@(_node?.Fqdn ?? "this host")</code>.
+                </span>
+            }
+        </p>
+
+        @if (_renewals.Count == 0)
+        {
+            <div class="alert alert-secondary mb-0">
+                No certificates yet. <a href="/certificates/new">Create one</a> whose source covers
+                <code>@(_node?.Fqdn ?? "this host's FQDN")</code>, then come back here to serve its cert on the UI.
+            </div>
+        }
+        else
+        {
+            <div class="row g-2 align-items-end">
+                <div class="col-md-8">
+                    <label class="form-label">Use a renewal's certificate for the web UI</label>
+                    <select class="form-select" @onchange="OnRenewalSelected" disabled="@_binding">
+                        <option value="">— select a renewal —</option>
+                        @foreach (var r in _renewals)
+                        {
+                            <option value="@r.Id" selected="@(_selectedRenewalId == r.Id)">
+                                @r.Name @(r.CoversFqdn ? "— covers this host" : "— does NOT cover this host")
+                            </option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <button type="button" class="btn btn-primary w-100"
+                            @onclick="BindAsync" disabled="@(_binding || _selectedRenewalId is null)">
+                        @(_binding ? "Issuing…" : "Issue & use for this UI")
+                    </button>
+                </div>
+            </div>
+            <div class="form-text">
+                Runs the renewal now — issues a fresh certificate from the CA and hot-swaps it onto :9443
+                (no restart). The binding is saved, so future renewals keep the UI certificate current.
+            </div>
+
+            @if (_selectedRenewalId is not null
+                 && _renewals.FirstOrDefault(r => r.Id == _selectedRenewalId) is { CoversFqdn: false })
+            {
+                <div class="alert alert-warning mt-2 mb-0 small">
+                    The selected renewal's certificate doesn't cover <code>@(_node?.Fqdn)</code>;
+                    the CA will refuse it for this endpoint. Pick (or create) a renewal that includes this host's FQDN.
+                </div>
+            }
+
+            @if (_bindError is not null)
+            {
+                <div class="alert alert-danger mt-2 mb-0"><pre class="m-0 small">@_bindError</pre></div>
+            }
+            else if (_bindResult is not null)
+            {
+                <div class="alert alert-@(_bindResult.Success ? "success" : "danger") mt-2 mb-0">
+                    <strong>@(_bindResult.Success ? "Done" : "Failed")</strong> in @_bindResult.DurationMs ms.
+                    @if (_bindResult.Success)
+                    {
+                        <span>The web UI now serves the issued certificate. Reload to clear the browser warning.</span>
+                    }
+                    else if (!string.IsNullOrEmpty(_bindResult.ErrorMessage))
+                    {
+                        <pre class="m-0 mt-2 small">@_bindResult.ErrorMessage</pre>
+                    }
+                </div>
+            }
+        }
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-md-4">
+        <a href="/settings/accounts" class="text-decoration-none">
+            <div class="card h-100 settings-card">
+                <div class="card-body">
+                    <h5 class="card-title">ACME Accounts</h5>
+                    <p class="card-text text-muted">
+                        Manage your registered accounts with Let's Encrypt and any other ACME CA.
+                        Each renewal points at exactly one account.
+                    </p>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <div class="col-md-4">
+        <a href="/settings/dns-providers" class="text-decoration-none">
+            <div class="card h-100 settings-card">
+                <div class="card-body">
+                    <h5 class="card-title">DNS Providers</h5>
+                    <p class="card-text text-muted">
+                        Reusable DNS-01 profiles. Configure Cloudflare / Azure / etc. once
+                        and pick one when creating a renewal.
+                    </p>
+                </div>
+            </div>
+        </a>
+    </div>
+
+    <div class="col-md-4">
+        <a href="/settings/secrets" class="text-decoration-none">
+            <div class="card h-100 settings-card">
+                <div class="card-body">
+                    <h5 class="card-title">Secrets</h5>
+                    <p class="card-text text-muted">
+                        Encrypted API tokens, HMAC keys, and other credentials referenced by
+                        plugin options. Values stored encrypted at rest.
+                    </p>
+                </div>
+            </div>
+        </a>
+    </div>
+</div>
+
+<style>
+    .settings-card:hover {
+        background-color: #f8f9fa;
+        cursor: pointer;
+    }
+</style>
+
+@code {
+    private const string EndpointInstallerId = "installer.acme-manager-endpoint";
+
+    private sealed record RenewalChoice(Guid Id, string Name, bool CoversFqdn);
+
+    private NodeInfo? _node;
+    private bool _discoveryEnabled = true;
+    private bool _discoveryChanged;
+
+    private List<RenewalChoice> _renewals = [];
+    private Guid? _selectedRenewalId;
+    private bool _binding;
+    private string? _bindError;
+    private RenewalRunResult? _bindResult;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _node = await NodeInfoProvider.GetAsync();
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var setting = await db.Settings.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Key == DiscoverySettings.Key);
+        _discoveryEnabled = DiscoverySettings.IsEnabled(
+            setting?.Value, Configuration.GetValue(DiscoverySettings.EnabledByDefaultConfigKey, defaultValue: true));
+
+        await LoadRenewalsAsync();
+    }
+
+    private async Task ToggleDiscoveryAsync()
+    {
+        var enable = !_discoveryEnabled;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var row = await db.Settings.FirstOrDefaultAsync(s => s.Key == DiscoverySettings.Key);
+        if (row is null)
+        {
+            db.Settings.Add(new SettingsValue { Key = DiscoverySettings.Key, Value = enable ? "true" : "false" });
+        }
+        else
+        {
+            row.Value = enable ? "true" : "false";
+        }
+        await db.SaveChangesAsync();
+        _discoveryEnabled = enable;
+        _discoveryChanged = true;
+    }
+
+    private async Task LoadRenewalsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var renewals = await db.Renewals.AsNoTracking().ToListAsync();
+        var certs = await db.Certificates.AsNoTracking().ToListAsync();
+
+        var latestByRenewal = certs
+            .GroupBy(c => c.RenewalId)
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.IssuedAt).First());
+
+        _renewals = renewals
+            .Select(r => new RenewalChoice(
+                r.Id,
+                r.Name,
+                CoversFqdn: latestByRenewal.TryGetValue(r.Id, out var cert) && CertCoversNode(cert)))
+            .OrderByDescending(c => c.CoversFqdn)
+            .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    // True when the cert's CN or any SAN matches this node's FQDN (or short hostname).
+    private bool CertCoversNode(Certificate cert)
+    {
+        if (_node is null) return false;
+
+        var names = new List<string>();
+        try { names.AddRange(JsonSerializer.Deserialize<List<string>>(cert.SansJson) ?? []); }
+        catch { /* ignore malformed SAN json */ }
+        names.Add(cert.Subject.StartsWith("CN=", StringComparison.OrdinalIgnoreCase)
+            ? cert.Subject[3..] : cert.Subject);
+
+        return names.Any(n =>
+            string.Equals(n, _node.Fqdn, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(n, _node.Hostname, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void OnRenewalSelected(ChangeEventArgs e)
+    {
+        _bindError = null;
+        _bindResult = null;
+        _selectedRenewalId = Guid.TryParse(e.Value?.ToString(), out var id) ? id : null;
+    }
+
+    private async Task BindAsync()
+    {
+        if (_selectedRenewalId is null) return;
+        _binding = true;
+        _bindError = null;
+        _bindResult = null;
+        try
+        {
+            // Attach the endpoint installer to this renewal (if missing) so the
+            // issued cert lands on :9443 now and on every future renewal.
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var renewal = await db.Renewals.FirstOrDefaultAsync(r => r.Id == _selectedRenewalId.Value);
+            if (renewal is null)
+            {
+                _bindError = "Renewal not found.";
+                return;
+            }
+
+            var steps = PluginStepSerializer.DeserializeList(renewal.InstallationsJson).ToList();
+            if (!steps.Any(s => string.Equals(s.PluginId, EndpointInstallerId, StringComparison.Ordinal)))
+            {
+                using var empty = JsonDocument.Parse("{}");
+                steps.Add(new PluginStepWire(EndpointInstallerId, empty.RootElement.Clone()));
+                renewal.InstallationsJson = PluginStepSerializer.SerializeWires(steps);
+                await db.SaveChangesAsync();
+            }
+
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var engine = scope.ServiceProvider.GetRequiredService<RenewalEngine>();
+            _bindResult = await engine.RunAsync(_selectedRenewalId.Value, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _bindError = ex.Message;
+        }
+        finally
+        {
+            _binding = false;
+            await LoadRenewalsAsync();
+        }
+    }
+}

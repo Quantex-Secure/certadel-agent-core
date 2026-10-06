@@ -1,0 +1,76 @@
+@page "/settings/dns-providers"
+@rendermode InteractiveServer
+@inject DnsProvidersService DnsProvidersSvc
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+
+<PageTitle>DNS providers — Certadel Agent</PageTitle>
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb"><li class="breadcrumb-item"><a href="/settings">Settings</a></li><li class="breadcrumb-item active">DNS providers</li></ol>
+</nav>
+<div class="d-flex align-items-center mb-3">
+    <h2 class="mb-0">DNS Providers</h2>
+    <a class="btn btn-primary ms-auto" href="/settings/dns-providers/new">+ New DNS provider</a>
+</div>
+
+<p class="text-muted small">
+    Each profile bundles a DNS-01 plugin id with its options (zone, credentials reference, propagation delay, …).
+    The renewal wizard picks one of these instead of repeating the config per certificate.
+</p>
+
+@if (_providers is null)
+{
+    <p class="text-muted">Loading…</p>
+}
+else if (_providers.Count == 0)
+{
+    <div class="card">
+        <div class="card-body text-muted">
+            No DNS providers configured yet. <a href="/settings/dns-providers/new">Add one</a> if you plan to use DNS-01 validation.
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <table class="table table-sm m-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Plugin</th>
+                    <th>Updated</th>
+                    <th class="text-end"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in _providers)
+                {
+                    <tr>
+                        <td><strong>@p.Name</strong></td>
+                        <td><code class="small">@p.PluginId</code></td>
+                        <td class="small text-muted">@p.UpdatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DeleteAsync(p.Id)"
+                                    @onclick:preventDefault>Delete</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private IReadOnlyList<DnsProvider>? _providers;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync() => _providers = await DnsProvidersSvc.ListAsync();
+
+    private async Task DeleteAsync(Guid id)
+    {
+        await DnsProvidersSvc.DeleteAsync(id);
+        await LoadAsync();
+    }
+}

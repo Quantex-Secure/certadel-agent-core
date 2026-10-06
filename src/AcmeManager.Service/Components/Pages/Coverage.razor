@@ -1,0 +1,120 @@
+@page "/coverage"
+@rendermode InteractiveServer
+@using AcmeManager.Service.Coverage
+@inject CoverageService CoverageSvc
+
+<PageTitle>Coverage — Certadel Agent</PageTitle>
+
+<h2 class="mb-1">Coverage report</h2>
+<p class="text-muted">
+    Reconciles the certificates @ServedBy actually serves against what's renewing them —
+    so a cert that nothing is renewing can't hide.
+</p>
+
+@if (!OperatingSystem.IsWindows())
+{
+    <div class="mb-3">
+        <label class="form-label">HAProxy config</label>
+        <input class="form-control" @bind="_configPath" @bind:after="ScanAsync"
+               placeholder="/etc/haproxy/haproxy.cfg" />
+    </div>
+}
+
+@if (_report is { } report)
+{
+    @if (report.Error is not null)
+    {
+        <div class="alert alert-warning">@report.Error</div>
+    }
+    else
+    {
+        <div class="mb-3 d-flex gap-2 flex-wrap">
+            <span class="badge bg-secondary">@report.Total served</span>
+            <span class="badge bg-success">@report.Managed managed here</span>
+            <span class="badge bg-info text-dark">@report.OtherToolManaged via another tool</span>
+            <span class="badge bg-danger">@report.Unmanaged unmanaged</span>
+            @if (report.ExpiringSoon > 0)
+            {
+                <span class="badge bg-warning text-dark">@report.ExpiringSoon expiring ≤21d</span>
+            }
+        </div>
+
+        <div class="small text-muted mb-2">
+            @ServedBy cert sources: @(report.CertSources.Count == 0 ? "(none found)" : string.Join(", ", report.CertSources))
+        </div>
+
+        <table class="table table-sm">
+            <thead>
+                <tr><th>Status</th><th>Domains</th><th>CA</th><th>Expires</th><th>Source</th><th>Detail</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var e in OrderedEntries(report))
+                {
+                    <tr class="@RowClass(e)">
+                        <td>@StatusLabel(e.Status)</td>
+                        <td class="small">@string.Join(", ", e.Domains)</td>
+                        <td class="small">@(e.Issuer ?? "—")</td>
+                        <td class="small">@ExpiryText(e.DaysUntilExpiry)</td>
+                        <td class="small"><code>@e.Path</code></td>
+                        <td class="small">@e.Detail</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        @if (report.Unmanaged > 0)
+        {
+            <div class="alert alert-danger">
+                <strong>@report.Unmanaged certificate(s) are served by @ServedBy but nothing is renewing them.</strong>
+                These will silently expire — create a renewal for each.
+            </div>
+        }
+    }
+}
+
+@code {
+    private string _configPath = "";
+    private CoverageReport? _report;
+
+    private static string ServedBy => OperatingSystem.IsWindows() ? "IIS" : "HAProxy";
+
+    protected override async Task OnInitializedAsync() => await ScanAsync();
+
+    private async Task ScanAsync()
+    {
+        var path = string.IsNullOrWhiteSpace(_configPath) ? null : _configPath.Trim();
+        _report = await CoverageSvc.ScanAsync(path, CancellationToken.None);
+    }
+
+    // Worst (unmanaged) first, then soonest-expiring.
+    private static IEnumerable<CoverageEntry> OrderedEntries(CoverageReport r) =>
+        r.Entries
+            .OrderByDescending(e => e.Status == CoverageStatus.Unmanaged)
+            .ThenBy(e => e.DaysUntilExpiry ?? int.MaxValue);
+
+    private static string RowClass(CoverageEntry e) => e.Status switch
+    {
+        CoverageStatus.Unmanaged => "table-danger",
+        CoverageStatus.MissingCert => "table-danger",
+        CoverageStatus.Unreadable => "table-secondary",
+        _ when e.DaysUntilExpiry is <= 21 and >= 0 => "table-warning",
+        _ => "",
+    };
+
+    private static string StatusLabel(CoverageStatus s) => s switch
+    {
+        CoverageStatus.Managed => "✓ managed",
+        CoverageStatus.OtherTool => "↪ migrate",
+        CoverageStatus.Unmanaged => "✗ UNMANAGED",
+        CoverageStatus.MissingCert => "✗ CERT MISSING",
+        CoverageStatus.Unreadable => "unreadable",
+        _ => s.ToString(),
+    };
+
+    private static string ExpiryText(int? days) => days switch
+    {
+        null => "—",
+        < 0 => $"EXPIRED {-days.Value}d ago",
+        _ => $"{days}d",
+    };
+}

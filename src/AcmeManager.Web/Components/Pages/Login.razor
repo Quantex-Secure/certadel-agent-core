@@ -1,0 +1,35 @@
+@page "/login"
+@layout EmptyLayout
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in — Certadel Agent</PageTitle>
+
+<div class="card shadow-sm" style="width: 22rem">
+    <div class="card-body">
+        <h4 class="card-title mb-3">Certadel Agent</h4>
+        @if (!string.IsNullOrEmpty(Error))
+        {
+            <div class="alert alert-danger py-2">@Error</div>
+        }
+        <form method="post" action="/api/login">
+            <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+            <div class="mb-2">
+                <label class="form-label">Username</label>
+                <input class="form-control" name="username" autocomplete="username" autofocus required />
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Password</label>
+                <input class="form-control" type="password" name="password" autocomplete="current-password" required />
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Sign in</button>
+        </form>
+        <p class="text-muted small mt-3 mb-0">
+            Sign in with an administrator account on this server. Domain accounts: <code>DOMAIN\name</code>.
+        </p>
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+}

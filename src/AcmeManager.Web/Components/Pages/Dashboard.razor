@@ -1,0 +1,166 @@
+@page "/"
+@page "/dashboard"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using AcmeManager.Web.Components.Shared
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Dashboard — Certadel Agent</PageTitle>
+
+<h2 class="mb-4">Dashboard</h2>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <StatCard Title="Certificates" Value="@_stats.RenewalsCount" Footer="@($"{_stats.EnabledCount} enabled")" />
+    </div>
+    <div class="col-md-4">
+        <StatCard Title="Expiring within 30 days"
+                  Value="@_stats.ExpiringSoon"
+                  Variant="@(_stats.ExpiringSoon > 0 ? "warning" : "")" />
+    </div>
+    <div class="col-md-4">
+        <StatCard Title="Failed in last 24h"
+                  Value="@_stats.RecentFailures"
+                  Variant="@(_stats.RecentFailures > 0 ? "danger" : "")" />
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header d-flex">
+                <span>Recent certificates</span>
+                <a href="/certificates" class="ms-auto small">View all →</a>
+            </div>
+            @if (_recentCerts.Count == 0)
+            {
+                <div class="card-body text-muted">No certificates issued yet.</div>
+            }
+            else
+            {
+                <table class="table table-sm m-0">
+                    <thead><tr><th>Subject</th><th>Issued</th><th>NotAfter</th></tr></thead>
+                    <tbody>
+                        @foreach (var c in _recentCerts)
+                        {
+                            <tr>
+                                <td><code class="small">@c.Subject</code></td>
+                                <td class="small text-muted">@c.IssuedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+                                <td class="small">@c.NotAfter.LocalDateTime.ToString("yyyy-MM-dd")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header d-flex">
+                <span>Recent history</span>
+                <a href="/history" class="ms-auto small">View all →</a>
+            </div>
+            @if (_recentHistory.Count == 0)
+            {
+                <div class="card-body text-muted">No renewals have run yet.</div>
+            }
+            else
+            {
+                <table class="table table-sm m-0">
+                    <thead><tr><th>When</th><th>Status</th><th>Message</th></tr></thead>
+                    <tbody>
+                        @foreach (var h in _recentHistory)
+                        {
+                            <tr>
+                                <td class="small text-muted">@h.At.LocalDateTime.ToString("HH:mm:ss")</td>
+                                <td><span class="badge bg-@StatusColor(h.Status)">@h.Status</span></td>
+                                <td class="small text-truncate" style="max-width: 240px">@h.Message</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private record DashboardStats(int RenewalsCount, int EnabledCount, int ExpiringSoon, int RecentFailures);
+
+    private DashboardStats _stats = new(0, 0, 0, 0);
+    private List<Certificate> _recentCerts = [];
+    private List<HistoryEntry> _recentHistory = [];
+    private Timer? _timer;
+    private bool _disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _timer = new Timer(
+            _ => {
+                if (_disposed) return;
+                _ = InvokeAsync(async () => {
+                    try {
+                        if (_disposed) return;
+                        await LoadAsync();
+                        StateHasChanged();
+                    } catch { }
+                });
+            },
+            state: null,
+            dueTime: TimeSpan.FromSeconds(30),
+            period: TimeSpan.FromSeconds(30));
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_disposed) return;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var now = DateTimeOffset.UtcNow;
+
+        var thirtyDaysOut = now.AddDays(30);
+        var oneDayAgo = now.AddHours(-24);
+
+        var renewalsCount = await db.Renewals.CountAsync();
+        var enabledCount = await db.Renewals.CountAsync(r => r.Enabled);
+
+        // DateTimeOffset comparisons aren't translatable by the SQLite EF
+        // provider — pull just the timestamps and filter in memory. Volume
+        // is bounded by total certs / failed history rows, both small.
+        var notAfters = await db.Certificates.AsNoTracking()
+            .Select(c => c.NotAfter).ToListAsync();
+        var expiringSoon = notAfters.Count(na => na > now && na < thirtyDaysOut);
+
+        var failedAts = await db.History.AsNoTracking()
+            .Where(h => h.Status == HistoryStatus.Failed)
+            .Select(h => h.At).ToListAsync();
+        var recentFailures = failedAts.Count(at => at > oneDayAgo);
+
+        _stats = new DashboardStats(renewalsCount, enabledCount, expiringSoon, recentFailures);
+
+        // SQLite EF provider can't ORDER BY DateTimeOffset — pull rows then sort in memory.
+        _recentCerts = (await db.Certificates.AsNoTracking().ToListAsync())
+            .OrderByDescending(c => c.IssuedAt).Take(5).ToList();
+        _recentHistory = (await db.History.AsNoTracking().ToListAsync())
+            .OrderByDescending(h => h.At).Take(5).ToList();
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _timer?.Dispose();
+    }
+
+    private static string StatusColor(HistoryStatus s) => s switch
+    {
+        HistoryStatus.Success => "success",
+        HistoryStatus.Failed => "danger",
+        HistoryStatus.Started => "secondary",
+        HistoryStatus.Skipped => "warning",
+        HistoryStatus.Warning => "warning",
+        _ => "secondary",
+    };
+}

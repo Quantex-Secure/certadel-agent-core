@@ -1,0 +1,26 @@
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public object? Value { get; set; }
+    [Parameter] public string? Footer { get; set; }
+    [Parameter] public string Variant { get; set; } = "";
+}
+
+<div class="card h-100 @CardClass">
+    <div class="card-body">
+        <h6 class="text-muted text-uppercase mb-1" style="font-size: 0.75rem; letter-spacing: 0.5px">@Title</h6>
+        <div class="display-6 fw-semibold">@Value</div>
+        @if (!string.IsNullOrEmpty(Footer))
+        {
+            <div class="text-muted small">@Footer</div>
+        }
+    </div>
+</div>
+
+@code {
+    private string CardClass => Variant switch
+    {
+        "warning" => "border-warning",
+        "danger"  => "border-danger",
+        _          => "",
+    };
+}

@@ -1,0 +1,76 @@
+@page "/settings/accounts"
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>Accounts — Certadel Agent</PageTitle>
+
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb"><li class="breadcrumb-item"><a href="/settings">Settings</a></li><li class="breadcrumb-item active">Accounts</li></ol>
+</nav>
+<div class="d-flex align-items-center mb-3">
+    <h2 class="mb-0">ACME Accounts</h2>
+    <a class="btn btn-primary ms-auto" href="/settings/accounts/new">+ New account</a>
+</div>
+
+@if (_accounts is null)
+{
+    <p class="text-muted">Loading…</p>
+}
+else if (_accounts.Count == 0)
+{
+    <div class="card">
+        <div class="card-body text-muted">
+            No ACME accounts yet. <a href="/settings/accounts/new">Create one</a> to start managing certificates.
+        </div>
+    </div>
+}
+else
+{
+    <div class="card">
+        <table class="table table-sm m-0">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Directory</th>
+                    <th>Contact</th>
+                    <th>Created</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var a in _accounts)
+                {
+                    <tr>
+                        <td><strong>@a.Name</strong></td>
+                        <td><code class="small">@a.DirectoryUrl</code></td>
+                        <td class="small">@a.ContactEmail</td>
+                        <td class="small text-muted">@a.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd")</td>
+                        <td>
+                            @if (a.RegisteredAt is not null)
+                            {
+                                <span class="badge bg-success">Registered</span>
+                            }
+                            else
+                            {
+                                <span class="badge bg-warning">Pending</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Account>? _accounts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var list = await db.Accounts.AsNoTracking().ToListAsync();
+        _accounts = list.OrderBy(a => a.Name).ToList();
+    }
+}

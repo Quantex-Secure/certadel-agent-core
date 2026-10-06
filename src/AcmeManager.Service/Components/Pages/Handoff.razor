@@ -1,0 +1,143 @@
+@page "/handoff"
+@rendermode InteractiveServer
+@using AcmeManager.Service.Handoff
+@inject HandoffService HandoffSvc
+
+<PageTitle>Handoff — Certadel Agent</PageTitle>
+
+<h2 class="mb-1">Handoff</h2>
+<p class="text-muted">
+    Stops the old tool from renewing certs acme-manager has taken over, so the two don't
+    both renew the same cert. Only certs acme-manager has <strong>already issued</strong> are
+    offered. Deregistering leaves the cert files, bindings, and config in place — it only
+    stops future renewals.
+</p>
+
+@if (_preview is { Tool: "win-acme" })
+{
+    <div class="mb-3" style="max-width: 640px;">
+        <label class="form-label">win-acme executable (<code>wacs.exe</code>)</label>
+        <input class="form-control" @bind="_wacsPath" @bind:after="LoadAsync"
+               placeholder="C:\Program Files\win-acme\wacs.exe" />
+        <div class="form-text">Auto-detected if installed in a common location; set it if win-acme lives elsewhere.</div>
+    </div>
+}
+
+@if (_preview is { } preview)
+{
+    @if (preview.Error is not null)
+    {
+        <div class="alert alert-warning">@preview.Error</div>
+    }
+    else if (preview.Candidates.Count == 0)
+    {
+        <div class="alert alert-success">
+            Nothing to hand off — no <strong>@preview.Tool</strong> renewal overlaps a cert acme-manager has issued.
+        </div>
+    }
+    else
+    {
+        <div class="card mb-3">
+            <div class="card-header">
+                @preview.Candidates.Count <strong>@preview.Tool</strong> renewal(s) acme-manager has taken over
+            </div>
+            <table class="table table-sm m-0">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" checked="@AllSelected" @onchange="ToggleAll" /></th>
+                        <th>@(preview.Tool == "win-acme" ? "Renewal" : "Domain")</th>
+                        <th>Now managed by</th>
+                        <th>Command</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var c in preview.Candidates)
+                    {
+                        <tr>
+                            <td><input type="checkbox" checked="@_selected.Contains(c.Target)" @onchange="() => Toggle(c.Target)" /></td>
+                            <td>@c.Target</td>
+                            <td class="small">acme-manager renewal '@c.CoveredBy'</td>
+                            <td class="small"><code>@c.DisplayCommand</code></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <button class="btn btn-warning" @onclick="ApplyAsync" disabled="@(_busy || _selected.Count == 0)">
+            @(_busy ? "Deregistering…" : $"Stop {preview.Tool} renewing {_selected.Count} selected")
+        </button>
+    }
+}
+
+@if (_result is { } result)
+{
+    @if (result.Error is not null)
+    {
+        <div class="alert alert-danger mt-3">@result.Error</div>
+    }
+    <div class="card mt-3">
+        <div class="card-header">Result — @result.Done deregistered, @result.Failed failed</div>
+        @if (result.Items.Count > 0)
+        {
+            <table class="table table-sm m-0">
+                <tbody>
+                    @foreach (var item in result.Items)
+                    {
+                        <tr><td>@item.Target</td><td class="small text-muted">@item.Status</td></tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+}
+
+@code {
+    private bool _busy;
+    private string _wacsPath = "";
+    private HandoffPreview? _preview;
+    private HandoffResult? _result;
+    private HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool AllSelected => _preview is { } p && p.Candidates.Count > 0 && _selected.Count == p.Candidates.Count;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _preview = await HandoffSvc.PreviewAsync(string.IsNullOrWhiteSpace(_wacsPath) ? null : _wacsPath, CancellationToken.None);
+        if (string.IsNullOrEmpty(_wacsPath) && _preview is { WacsPath: { } detected })
+        {
+            _wacsPath = detected;
+        }
+        _selected = _preview is { Error: null }
+            ? new HashSet<string>(_preview.Candidates.Select(c => c.Target), StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task ApplyAsync()
+    {
+        _busy = true;
+        try
+        {
+            _result = await HandoffSvc.ApplyAsync(string.IsNullOrWhiteSpace(_wacsPath) ? null : _wacsPath, _selected.ToList(), CancellationToken.None);
+            await LoadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void Toggle(string target)
+    {
+        if (!_selected.Remove(target)) _selected.Add(target);
+    }
+
+    private void ToggleAll(ChangeEventArgs e)
+    {
+        _selected = (bool)(e.Value ?? false) && _preview is { } p
+            ? new HashSet<string>(p.Candidates.Select(c => c.Target), StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    }
+}

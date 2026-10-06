@@ -1,0 +1,309 @@
+@page "/certificates/{Id:guid}"
+@page "/renewals/{Id:guid}"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject IServiceScopeFactory ScopeFactory
+@inject NavigationManager Nav
+@using System.Text.Json
+@using AcmeManager.Core.Engine
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>@(_renewal?.Name ?? "Renewal") — Certadel Agent</PageTitle>
+
+@if (_renewal is null)
+{
+    <p class="text-muted">Loading…</p>
+}
+else
+{
+    <div class="d-flex align-items-center mb-3">
+        <h2 class="mb-0">@_renewal.Name</h2>
+        <div class="ms-auto d-flex gap-2">
+            <a class="btn btn-outline-secondary" href="@($"/certificates/{Id}/edit")">Edit</a>
+            <button class="btn btn-outline-secondary" @onclick="ToggleEnabledAsync" disabled="@_busy">
+                @(_renewal.Enabled ? "Disable" : "Enable")
+            </button>
+            <button class="btn btn-primary" @onclick="RunNowAsync" disabled="@_busy">
+                @(_busy ? "Running…" : "Renew now")
+            </button>
+            @if (_confirmingDelete)
+            {
+                <button class="btn btn-danger" @onclick="DeleteAsync" disabled="@_busy">Confirm delete</button>
+                <button class="btn btn-outline-secondary" @onclick="() => _confirmingDelete = false" disabled="@_busy">Cancel</button>
+            }
+            else
+            {
+                <button class="btn btn-outline-danger" @onclick="() => _confirmingDelete = true" disabled="@_busy">Delete</button>
+            }
+        </div>
+    </div>
+
+    @if (_confirmingDelete)
+    {
+        <div class="alert alert-warning">
+            Deleting removes this renewal, its issued certificates from their configured
+            stores, and the certificate records. Run history is kept. This cannot be undone.
+        </div>
+    }
+
+    @if (_lastResult is not null)
+    {
+        <div class="alert alert-@(_lastResult.Success ? "success" : "danger")">
+            <strong>@(_lastResult.Success ? "Success" : "Failed")</strong>
+            in @_lastResult.DurationMs ms.
+            @if (_lastResult.IssuedNotAfter is not null)
+            {
+                <span>NotAfter: @_lastResult.IssuedNotAfter.Value.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</span>
+            }
+            @if (!string.IsNullOrEmpty(_lastResult.ErrorMessage))
+            {
+                <pre class="m-0 mt-2 small">@_lastResult.ErrorMessage</pre>
+            }
+        </div>
+    }
+
+    <div class="row g-3">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">Configuration</div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-4">Account</dt>
+                        <dd class="col-8">@(_renewal.Account?.Name ?? _renewal.AccountId.ToString())</dd>
+                        <dt class="col-4">Renewal window</dt>
+                        <dd class="col-8">@_renewal.RenewalWindowDays days</dd>
+                        <dt class="col-4">Source</dt>
+                        <dd class="col-8"><code class="small">@PluginIdFor(_renewal.SourceJson)</code></dd>
+                        <dt class="col-4">Validation</dt>
+                        <dd class="col-8"><code class="small">@PluginIdFor(_renewal.ValidationJson)</code></dd>
+                        <dt class="col-4">Stores</dt>
+                        <dd class="col-8">@PluginListFor(_renewal.StoresJson)</dd>
+                        <dt class="col-4">Installations</dt>
+                        <dd class="col-8">@PluginListFor(_renewal.InstallationsJson)</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">Latest certificate</div>
+                <div class="card-body">
+                    @if (_latestCert is null)
+                    {
+                        <p class="text-muted mb-0">Never issued.</p>
+                    }
+                    else
+                    {
+                        <dl class="row mb-0">
+                            <dt class="col-4">Subject</dt>
+                            <dd class="col-8"><code class="small">@_latestCert.Subject</code></dd>
+                            <dt class="col-4">Thumbprint</dt>
+                            <dd class="col-8"><code class="small text-break">@_latestCert.Thumbprint</code></dd>
+                            <dt class="col-4">NotBefore</dt>
+                            <dd class="col-8">@_latestCert.NotBefore.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</dd>
+                            <dt class="col-4">NotAfter</dt>
+                            <dd class="col-8">@_latestCert.NotAfter.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</dd>
+                            <dt class="col-4">In service</dt>
+                            <dd class="col-8">
+                                @if (_latestCert.Verified == true)
+                                {
+                                    <span class="badge bg-success">verified @_latestCert.VerifiedAt?.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</span>
+                                }
+                                else
+                                {
+                                    <span class="badge bg-secondary" title="No endpoint could be checked after install.">unverified</span>
+                                }
+                            </dd>
+                            <dt class="col-4">Issued</dt>
+                            <dd class="col-8">@_latestCert.IssuedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</dd>
+                            <dt class="col-4">SANs</dt>
+                            <dd class="col-8">
+                                @if (_sans.Count == 0)
+                                {
+                                    <span class="text-muted">—</span>
+                                }
+                                else
+                                {
+                                    @foreach (var s in _sans)
+                                    {
+                                        <div><code class="small">@s</code></div>
+                                    }
+                                }
+                            </dd>
+                            @if (_storeRefs.Count > 0)
+                            {
+                                <dt class="col-4">Stored at</dt>
+                                <dd class="col-8">
+                                    @foreach (var kv in _storeRefs)
+                                    {
+                                        <div><code class="small">@kv.Key</code>: <code class="small text-break">@kv.Value</code></div>
+                                    }
+                                </dd>
+                            }
+                        </dl>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-3">
+        <div class="card-header">History</div>
+        @if (_history.Count == 0)
+        {
+            <div class="card-body text-muted">No runs recorded.</div>
+        }
+        else
+        {
+            <table class="table table-sm m-0">
+                <thead><tr><th>When</th><th>Status</th><th>Duration</th><th>Message</th></tr></thead>
+                <tbody>
+                    @foreach (var h in _history)
+                    {
+                        <tr>
+                            <td class="small text-muted">@h.At.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td><span class="badge bg-@StatusColor(h.Status)">@h.Status</span></td>
+                            <td class="small text-muted">@h.DurationMs ms</td>
+                            <td class="small">@h.Message</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Renewal? _renewal;
+    private Certificate? _latestCert;
+    private List<string> _sans = [];
+    private Dictionary<string, string> _storeRefs = new();
+    private List<HistoryEntry> _history = [];
+    private bool _busy;
+    private bool _confirmingDelete;
+    private RenewalRunResult? _lastResult;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _renewal = await db.Renewals.AsNoTracking()
+            .Include(r => r.Account)
+            .FirstOrDefaultAsync(r => r.Id == Id);
+        if (_renewal is null) return;
+
+        var certs = await db.Certificates.AsNoTracking()
+            .Where(c => c.RenewalId == Id)
+            .ToListAsync();
+        _latestCert = certs.OrderByDescending(c => c.IssuedAt).FirstOrDefault();
+
+        _sans = [];
+        _storeRefs = new();
+        if (_latestCert is not null)
+        {
+            try { _sans = JsonSerializer.Deserialize<List<string>>(_latestCert.SansJson) ?? []; }
+            catch { /* ignore malformed */ }
+            if (!string.IsNullOrEmpty(_latestCert.StoreReferencesJson))
+            {
+                try { _storeRefs = JsonSerializer.Deserialize<Dictionary<string, string>>(_latestCert.StoreReferencesJson) ?? new(); }
+                catch { /* ignore malformed */ }
+            }
+        }
+
+        var hist = await db.History.AsNoTracking()
+            .Where(h => h.RenewalId == Id)
+            .ToListAsync();
+        _history = hist.OrderByDescending(h => h.At).Take(50).ToList();
+    }
+
+    private async Task ToggleEnabledAsync()
+    {
+        if (_renewal is null) return;
+        _busy = true;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var entity = await db.Renewals.FirstAsync(r => r.Id == Id);
+            entity.Enabled = !entity.Enabled;
+            await db.SaveChangesAsync();
+            await LoadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RunNowAsync()
+    {
+        if (_renewal is null) return;
+        _busy = true;
+        _lastResult = null;
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var engine = scope.ServiceProvider.GetRequiredService<RenewalEngine>();
+            _lastResult = await engine.RunAsync(Id, default);
+            await LoadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_renewal is null) return;
+        _busy = true;
+        try
+        {
+            await using var scope = ScopeFactory.CreateAsyncScope();
+            var cleanup = scope.ServiceProvider.GetRequiredService<CertificateCleanupService>();
+            await cleanup.DeleteRenewalAsync(Id, default);
+            Nav.NavigateTo("/certificates");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string PluginIdFor(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return "—";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return doc.RootElement.GetProperty("pluginId").GetString() ?? "—";
+        }
+        catch { return "(invalid)"; }
+    }
+
+    private static string PluginListFor(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || json == "[]") return "—";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            return string.Join(", ", doc.RootElement.EnumerateArray()
+                .Select(e => e.GetProperty("pluginId").GetString() ?? "?"));
+        }
+        catch { return "(invalid)"; }
+    }
+
+    private static string StatusColor(HistoryStatus s) => s switch
+    {
+        HistoryStatus.Success => "success",
+        HistoryStatus.Failed => "danger",
+        HistoryStatus.Started => "secondary",
+        HistoryStatus.Skipped => "warning",
+        HistoryStatus.Warning => "warning",
+        _ => "secondary",
+    };
+}

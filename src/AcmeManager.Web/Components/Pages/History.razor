@@ -1,0 +1,191 @@
+@page "/history"
+@rendermode InteractiveServer
+@inject IDbContextFactory<AcmeManagerDbContext> DbFactory
+@inject IJSRuntime JS
+@using System.Text
+@using AcmeManager.Core.Storage
+@using AcmeManager.Core.Storage.Entities
+@using Microsoft.EntityFrameworkCore
+
+<PageTitle>History — Certadel Agent</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="m-0">History</h2>
+    @if (!_loading && _all.Count > 0)
+    {
+        <div class="d-flex gap-2 align-items-center">
+            @if (_confirming)
+            {
+                <span class="text-danger">Delete @FilteredCount entr@(FilteredCount == 1 ? "y" : "ies")?</span>
+                <button class="btn btn-sm btn-danger" @onclick="ClearAsync">Yes, clear</button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="() => _confirming = false">Cancel</button>
+            }
+            else
+            {
+                <button class="btn btn-sm btn-outline-secondary" @onclick="DownloadAsync" disabled="@(FilteredCount == 0)">
+                    Download @(IsFiltered ? "filtered" : "all")
+                </button>
+                <button class="btn btn-sm btn-outline-danger" @onclick="() => _confirming = true" disabled="@(FilteredCount == 0)">
+                    Clear @(IsFiltered ? $"{FilteredCount} filtered" : "all")
+                </button>
+            }
+        </div>
+    }
+</div>
+
+<div class="row g-2 mb-3">
+    <div class="col-md-3">
+        <select class="form-select form-select-sm" @bind="_status">
+            <option value="">All statuses</option>
+            <option value="Success">Success</option>
+            <option value="Failed">Failed</option>
+            <option value="Started">Started</option>
+            <option value="Skipped">Skipped</option>
+        </select>
+    </div>
+    <div class="col-md-4">
+        <select class="form-select form-select-sm" @bind="_renewalId">
+            <option value="">All renewals</option>
+            @foreach (var (id, name) in RenewalOptions())
+            {
+                <option value="@id">@name</option>
+            }
+        </select>
+    </div>
+    <div class="col-md-5">
+        <input class="form-control form-control-sm" placeholder="Search message or renewal…"
+               @bind="_search" @bind:event="oninput" />
+    </div>
+</div>
+
+@if (_loading)
+{
+    <p class="text-muted">Loading…</p>
+}
+else if (_all.Count == 0)
+{
+    <div class="card"><div class="card-body text-muted">No renewal runs recorded yet.</div></div>
+}
+else
+{
+    var rows = Filtered().ToList();
+    <div class="small text-muted mb-2">Showing @rows.Count of @_all.Count (most recent @_all.Count kept)</div>
+    <div class="card">
+        <table class="table table-sm m-0">
+            <thead>
+                <tr><th>When</th><th>Renewal</th><th>Status</th><th>Duration</th><th>Message</th></tr>
+            </thead>
+            <tbody>
+                @if (rows.Count == 0)
+                {
+                    <tr><td colspan="5" class="text-muted text-center">No entries match the filter.</td></tr>
+                }
+                @foreach (var r in rows)
+                {
+                    <tr>
+                        <td class="small text-muted">@r.At.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="small">
+                            @if (r.RenewalId is not null)
+                            {
+                                <a href="@($"/certificates/{r.RenewalId}")">@r.RenewalName</a>
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td><span class="badge bg-@StatusColor(r.Status)">@r.Status</span></td>
+                        <td class="small text-muted">@r.DurationMs ms</td>
+                        <td class="small">@r.Message</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private record Row(Guid Id, DateTimeOffset At, Guid? RenewalId, string RenewalName, HistoryStatus Status, long DurationMs, string Message);
+
+    private List<Row> _all = [];
+    private bool _loading = true;
+    private string _status = "";
+    private string _renewalId = "";
+    private string _search = "";
+    private bool _confirming;
+
+    private bool IsFiltered => _status != "" || _renewalId != "" || !string.IsNullOrWhiteSpace(_search);
+    private int FilteredCount => Filtered().Count();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _confirming = false;
+        await using var db = await DbFactory.CreateDbContextAsync();
+        // SQLite can't ORDER BY a DateTimeOffset, so sort + cap in memory after loading.
+        var list = await db.History.AsNoTracking().Include(h => h.Renewal).ToListAsync();
+        _all = list
+            .OrderByDescending(h => h.At)
+            .Take(2000)
+            .Select(h => new Row(h.Id, h.At, h.RenewalId, h.Renewal?.Name ?? "—", h.Status, h.DurationMs, h.Message))
+            .ToList();
+        _loading = false;
+    }
+
+    private IEnumerable<Row> Filtered() => _all
+        .Where(r => _status == "" || r.Status.ToString() == _status)
+        .Where(r => _renewalId == "" || r.RenewalId?.ToString() == _renewalId)
+        .Where(r => string.IsNullOrWhiteSpace(_search)
+            || r.Message.Contains(_search, StringComparison.OrdinalIgnoreCase)
+            || r.RenewalName.Contains(_search, StringComparison.OrdinalIgnoreCase));
+
+    private IEnumerable<(string Id, string Name)> RenewalOptions() => _all
+        .Where(r => r.RenewalId is not null)
+        .Select(r => (Id: r.RenewalId!.Value.ToString(), Name: r.RenewalName))
+        .DistinctBy(x => x.Id)
+        .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase);
+
+    private async Task DownloadAsync()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"Certadel history export — {DateTimeOffset.Now.LocalDateTime:yyyy-MM-dd HH:mm:ss}");
+        if (IsFiltered)
+        {
+            var renewal = RenewalOptions().FirstOrDefault(o => o.Id == _renewalId).Name ?? "(any)";
+            sb.AppendLine($"Filter — status: {(_status == "" ? "(any)" : _status)}, renewal: {(_renewalId == "" ? "(any)" : renewal)}, search: \"{_search}\"");
+        }
+        sb.AppendLine($"Entries: {FilteredCount}");
+        sb.AppendLine(new string('-', 80));
+        foreach (var r in Filtered())
+        {
+            sb.AppendLine($"{r.At.LocalDateTime:yyyy-MM-dd HH:mm:ss}  {r.Status,-8}  {r.DurationMs,8} ms  {r.RenewalName}");
+            sb.AppendLine($"    {r.Message}");
+        }
+        var name = $"certadel-history-{DateTimeOffset.Now.LocalDateTime:yyyyMMdd-HHmmss}.txt";
+        await JS.InvokeVoidAsync("downloadText", name, sb.ToString());
+    }
+
+    private async Task ClearAsync()
+    {
+        var ids = Filtered().Select(r => r.Id).ToList();
+        await using var db = await DbFactory.CreateDbContextAsync();
+        // Chunk to stay under SQLite's parameter limit on a large filtered set.
+        foreach (var chunk in ids.Chunk(500))
+        {
+            await db.History.Where(h => chunk.Contains(h.Id)).ExecuteDeleteAsync();
+        }
+        await LoadAsync();
+    }
+
+    private static string StatusColor(HistoryStatus s) => s switch
+    {
+        HistoryStatus.Success => "success",
+        HistoryStatus.Failed => "danger",
+        HistoryStatus.Started => "secondary",
+        HistoryStatus.Skipped => "warning",
+        HistoryStatus.Warning => "warning",
+        _ => "secondary",
+    };
+}

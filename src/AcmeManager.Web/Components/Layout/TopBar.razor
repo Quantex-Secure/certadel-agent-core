@@ -1,0 +1,21 @@
+@inject NavigationManager Nav
+
+<header class="border-bottom bg-white px-4 py-2 d-flex align-items-center">
+    <div class="text-muted small">
+        @CurrentPath
+    </div>
+    <div class="ms-auto d-flex align-items-center gap-3">
+        <AuthorizeView>
+            <Authorized>
+                <span class="text-muted small">@context.User.Identity?.Name</span>
+                <form method="post" action="/api/logout" class="m-0">
+                    <button type="submit" class="btn btn-sm btn-outline-secondary">Logout</button>
+                </form>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+</header>
+
+@code {
+    private string CurrentPath => "/" + new Uri(Nav.Uri).AbsolutePath.Trim('/');
+}

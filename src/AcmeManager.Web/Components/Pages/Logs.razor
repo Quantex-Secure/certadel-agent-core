@@ -1,0 +1,174 @@
+@page "/logs"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject InMemoryLogStore LogStore
+@inject IJSRuntime JS
+@using System.Text
+@using AcmeManager.Core.Logging
+
+<PageTitle>Logs — Certadel Agent</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-1">
+    <h2 class="m-0">Logs</h2>
+    <div class="d-flex gap-2 align-items-center">
+        @if (_confirming)
+        {
+            <span class="text-danger">Clear the live log buffer?</span>
+            <button class="btn btn-sm btn-danger" @onclick="ClearAsync">Yes, clear</button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="() => _confirming = false">Cancel</button>
+        }
+        else
+        {
+            <button class="btn btn-sm btn-outline-secondary" @onclick="DownloadAsync">Download</button>
+            <button class="btn btn-sm btn-outline-danger" @onclick="() => _confirming = true">Clear</button>
+        }
+    </div>
+</div>
+
+<p class="text-muted small">
+    Live tail of the in-process log (last @LogStore.Capacity entries). Tails new events as they arrive.
+    Clear empties this live buffer only — the rolling log files on disk are untouched.
+</p>
+
+<div class="row g-2 mb-2">
+    <div class="col-md-3">
+        <select class="form-select form-select-sm" @bind="_level">
+            <option value="">All levels</option>
+            <option value="Trace">Trace</option>
+            <option value="Debug">Debug</option>
+            <option value="Information">Information</option>
+            <option value="Warning">Warning</option>
+            <option value="Error">Error</option>
+            <option value="Critical">Critical</option>
+        </select>
+    </div>
+    <div class="col-md-6">
+        <input class="form-control form-control-sm" placeholder="Search message…" @bind="_search" @bind:event="oninput" />
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <pre class="p-3 m-0 small log-pane">@RenderLog()</pre>
+    </div>
+</div>
+
+@code {
+    private List<LogEntry> _entries = [];
+    private string _level = "";
+    private string _search = "";
+    private bool _confirming;
+
+    protected override void OnInitialized()
+    {
+        _entries = LogStore.Snapshot().ToList();
+        LogStore.EntryAdded += OnEntry;
+        LogStore.Cleared += OnCleared;
+    }
+
+    private void OnEntry(LogEntry entry)
+    {
+        _ = InvokeAsync(() =>
+        {
+            try
+            {
+                lock (_entries)
+                {
+                    _entries.Add(entry);
+                    if (_entries.Count > LogStore.Capacity)
+                    {
+                        _entries.RemoveRange(0, _entries.Count - LogStore.Capacity);
+                    }
+                }
+                StateHasChanged();
+            }
+            catch { }
+        });
+    }
+
+    private void OnCleared() => _ = InvokeAsync(() =>
+    {
+        lock (_entries) { _entries.Clear(); }
+        StateHasChanged();
+    });
+
+    private LogEntry[] Filtered()
+    {
+        LogEntry[] snapshot;
+        lock (_entries)
+        {
+            snapshot = _entries.ToArray();
+        }
+        return snapshot
+            .Where(e => _level == "" || e.Level.Equals(_level, StringComparison.OrdinalIgnoreCase))
+            .Where(e => string.IsNullOrWhiteSpace(_search) || e.Message.Contains(_search, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
+    private string RenderLog()
+    {
+        var entries = Filtered();
+        if (entries.Length == 0)
+        {
+            return _entries.Count == 0 ? "(no log entries yet)" : "(no entries match the filter)";
+        }
+        var sb = new StringBuilder();
+        foreach (var e in entries.TakeLast(500))
+        {
+            sb.Append('[').Append(e.At.LocalDateTime.ToString("HH:mm:ss.fff")).Append("] ")
+              .Append(e.Level.PadRight(11)).Append(' ')
+              .AppendLine(e.Message);
+            if (!string.IsNullOrEmpty(e.Exception))
+            {
+                sb.AppendLine(e.Exception);
+            }
+        }
+        return sb.ToString();
+    }
+
+    private async Task DownloadAsync()
+    {
+        var entries = Filtered();
+        var sb = new StringBuilder();
+        sb.AppendLine($"Certadel log export — {DateTimeOffset.Now.LocalDateTime:yyyy-MM-dd HH:mm:ss}");
+        if (_level != "" || !string.IsNullOrWhiteSpace(_search))
+        {
+            sb.AppendLine($"Filter — level: {(_level == "" ? "(any)" : _level)}, search: \"{_search}\"");
+        }
+        sb.AppendLine($"Entries: {entries.Length}");
+        sb.AppendLine(new string('-', 80));
+        foreach (var e in entries)
+        {
+            sb.Append('[').Append(e.At.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss.fff")).Append("] ")
+              .Append(e.Level.PadRight(11)).Append(' ').AppendLine(e.Message);
+            if (!string.IsNullOrEmpty(e.Exception))
+            {
+                sb.AppendLine(e.Exception);
+            }
+        }
+        var name = $"certadel-logs-{DateTimeOffset.Now.LocalDateTime:yyyyMMdd-HHmmss}.txt";
+        await JS.InvokeVoidAsync("downloadText", name, sb.ToString());
+    }
+
+    private void ClearAsync()
+    {
+        LogStore.Clear();
+        _confirming = false;
+    }
+
+    public void Dispose()
+    {
+        LogStore.EntryAdded -= OnEntry;
+        LogStore.Cleared -= OnCleared;
+    }
+}
+
+<style>
+    .log-pane {
+        max-height: 70vh;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+</style>

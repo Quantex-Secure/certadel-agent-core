@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-AcmeManager.Service-5f7769a1-a0d0-45bc-87a5-10a9039bd781</UserSecretsId>
+    <!-- LibraryImport source-gen for PAM/LogonUser P/Invokes needs unsafe. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Suppress the NavigationException pattern during SSR redirects so
+         a user catch(Exception) can't accidentally swallow Blazor's signal. -->
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Makaretu.Dns.Multicast" Version="0.27.0" />
+    <!-- 10.0.10 is the first patched release for CVE-2026-47300 / CVE-2026-47303
+         (Negotiate elevation-of-privilege, GHSA-2p3q-h3hg-jcqq / GHSA-8prm-248r-h957).
+         Versions <= 10.0.9 are vulnerable; do not downgrade. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.8" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Internal types under test: the win-acme import service and mappers. -->
+    <InternalsVisibleTo Include="AcmeManager.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AcmeManager.Api.Contracts\AcmeManager.Api.Contracts.csproj" />
+    <ProjectReference Include="..\AcmeManager.Core\AcmeManager.Core.csproj" />
+    <ProjectReference Include="..\AcmeManager.Web\AcmeManager.Web.csproj" />
+    <ProjectReference Include="..\AcmeManager.Plugins.BuiltIn\AcmeManager.Plugins.BuiltIn.csproj" />
+    <ProjectReference Include="..\AcmeManager.Plugins.Iis\AcmeManager.Plugins.Iis.csproj" />
+    <ProjectReference Include="..\AcmeManager.Plugins.Linux\AcmeManager.Plugins.Linux.csproj" />
+    <ProjectReference Include="..\AcmeManager.Plugins.Dns.Aws\AcmeManager.Plugins.Dns.Aws.csproj" />
+    <ProjectReference Include="..\AcmeManager.Plugins.Dns.Azure\AcmeManager.Plugins.Dns.Azure.csproj" />
+    <ProjectReference Include="..\AcmeManager.Plugins.Dns.Google\AcmeManager.Plugins.Dns.Google.csproj" />
+  </ItemGroup>
+</Project>

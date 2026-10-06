@@ -1,0 +1,81 @@
+@using AcmeManager.Core.Plugins
+@using AcmeManager.Plugins.Contracts
+@inject PluginCatalog Catalog
+
+<div class="card mb-3">
+    <div class="card-header d-flex">
+        <span>@Title</span>
+        <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" @onclick="Add">+ Add</button>
+    </div>
+    <div class="card-body">
+        @if (Steps.Count == 0)
+        {
+            <p class="text-muted small mb-0">None configured.</p>
+        }
+        else
+        {
+            @for (var i = 0; i < Steps.Count; i++)
+            {
+                var idx = i; // capture for closure
+                <div class="border rounded p-3 mb-3">
+                    <div class="d-flex align-items-end gap-2 mb-2">
+                        <div class="flex-grow-1">
+                            <label class="form-label">Plugin</label>
+                            <select class="form-select" @onchange="(e) => OnPluginSelected(idx, e)">
+                                <option value="">— select —</option>
+                                @foreach (var p in (PluginsByCat.GetValueOrDefault(Category) ?? new()))
+                                {
+                                    <option value="@p.Id" selected="@(Steps[idx].PluginId == p.Id)">@p.Id</option>
+                                }
+                            </select>
+                        </div>
+                        <button type="button" class="btn btn-outline-danger" @onclick="() => Remove(idx)">Remove</button>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(Steps[idx].PluginId))
+                    {
+                        <PluginOptionsForm OptionsType="@OptionsTypeFor(Steps[idx].PluginId)"
+                                           OptionsJson="@Steps[idx].OptionsJson"
+                                           OptionsJsonChanged="@(json => Steps[idx].OptionsJson = json)" />
+                    }
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter, EditorRequired] public List<StepModel> Steps { get; set; } = null!;
+    [Parameter, EditorRequired] public Dictionary<PluginCategory, List<PluginRegistration>> PluginsByCat { get; set; } = new();
+    [Parameter, EditorRequired] public PluginCategory Category { get; set; }
+
+    private void Add() => Steps.Add(new StepModel());
+
+    private void Remove(int index)
+    {
+        if (index >= 0 && index < Steps.Count) Steps.RemoveAt(index);
+    }
+
+    private void OnPluginSelected(int index, ChangeEventArgs e)
+    {
+        if (index < 0 || index >= Steps.Count) return;
+        var step = Steps[index];
+        step.PluginId = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(step.PluginId))
+        {
+            step.OptionsJson = "{}";
+            return;
+        }
+        try
+        {
+            var reg = Catalog.Get(step.PluginId);
+            var defaults = reg.DefaultOptionsFactory();
+            step.OptionsJson = Catalog.SerializeOptions(defaults);
+        }
+        catch { /* leave previous JSON */ }
+        StateHasChanged();
+    }
+
+    private Type? OptionsTypeFor(string pluginId) =>
+        Catalog.TryGet(pluginId, out var reg) ? reg.OptionsType : null;
+}
